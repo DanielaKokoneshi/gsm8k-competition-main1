@@ -1,16 +1,22 @@
 """
-GSM8K Competition Agent v3 — Math-specialized model + self-consistency voting.
+GSM8K Competition Agent v4 — Speed-safe greedy with math-specialized model.
 
-KEY UPGRADES over v2:
-1. Model swap: Qwen/Qwen2.5-Math-1.5B-Instruct (math-finetuned) instead of
-   general Qwen2.5-1.5B-Instruct. Same parameter count, massively better on math.
-2. Self-consistency: generate N=3 samples per question at temperature 0.7,
-   pick the majority-vote answer. Falls back to greedy if all answers differ.
-3. Prompt format: matches Qwen2.5-Math training format exactly (CoT style).
-4. Python-based arithmetic verification: re-evaluate the last expression in
-   the trace to catch off-by-one and rounding errors.
-5. Batched voting pass: all 10×3 samples generated in one GPU call to stay
-   inside the 60s budget.
+ROOT CAUSE OF TIMEOUT: Batched sampling (10 questions × 3 samples × 512 tokens)
+produced ~15k tokens total — ~150s at 100 tok/s on a typical eval GPU.
+
+FIX STRATEGY:
+  1. Greedy only (do_sample=False) — fastest possible, fully deterministic.
+  2. Max 256 new tokens — GSM8K solutions rarely exceed ~200 tokens.
+  3. Qwen/Qwen2.5-Math-1.5B-Instruct — math-finetuned, same size as before,
+     dramatically better accuracy than the general Qwen2.5-1.5B-Instruct.
+  4. Prompt format matches the model's training: system = "Please reason step
+     by step, and put your final answer within \\boxed{}."
+  5. One cheap temperature=0.5 retry (128 tokens budget) only for NaN parses.
+
+BUDGET ESTIMATE (conservative):
+  10 questions × ~150 tokens avg × 1 greedy pass ≈ 1500 tokens ≈ 15s
+  + up to 3 NaN retries × 128 tokens ≈ ~4s worst case
+  Total: ~20s — well inside 60s.
 
 INTERFACE: Returns tuple[list[float], list[str]]
 """
@@ -18,7 +24,6 @@ INTERFACE: Returns tuple[list[float], list[str]]
 import ast
 import operator
 import re
-from collections import Counter
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -28,38 +33,30 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 # ============================================================================
 
 MODEL_NAME = "Qwen/Qwen2.5-Math-1.5B-Instruct"
-MAX_NEW_TOKENS = 512          # math model benefits from slightly more tokens
-N_SAMPLES = 3                 # majority vote over this many samples
-VOTE_TEMPERATURE = 0.7        # sampling temperature for non-greedy passes
-TOP_P = 0.95
+MAX_NEW_TOKENS = 256       # enough for GSM8K; saves ~2× time vs 512
+RETRY_MAX_TOKENS = 128     # for NaN-retry pass only
 
-# Qwen2.5-Math was trained with this exact system prompt for CoT mode.
-SYSTEM_PROMPT = (
-    "Please reason step by step, and put your final answer within \\boxed{}."
-)
+# Exact system prompt Qwen2.5-Math was trained with (CoT mode).
+SYSTEM_PROMPT = "Please reason step by step, and put your final answer within \\boxed{}."
 
 # ============================================================================
-# Answer Extraction
+# Answer extraction
 # ============================================================================
 
-_NUMBER_RE = re.compile(r"-?\d+(?:[.,]\d+)*")
+_NUMBER_RE  = re.compile(r"-?\d+(?:[.,]\d+)*")
 _BOXED_RE   = re.compile(r"\\boxed\{([^}]*)\}")
 _HASH_RE    = re.compile(r"####\s*(-?[\d,]+)")
-_GSM_TAG_RE = re.compile(r"<<[^=]*=\s*(-?\d+(?:\.\d+)?)\s*>>")
+_TAG_RE     = re.compile(r"<<[^=]*=\s*(-?\d+(?:\.\d+)?)\s*>>")
 
 _BINOPS = {
-    ast.Add: operator.add,
-    ast.Sub: operator.sub,
-    ast.Mult: operator.mul,
-    ast.Div: operator.truediv,
-    ast.FloorDiv: operator.floordiv,
-    ast.Pow: operator.pow,
+    ast.Add: operator.add,  ast.Sub: operator.sub,
+    ast.Mult: operator.mul, ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv, ast.Pow: operator.pow,
     ast.USub: operator.neg,
 }
 
 
 def _safe_arith(expr: str):
-    """Safely evaluate a pure arithmetic expression (no eval)."""
     expr = expr.strip().replace(",", "")
     if not expr or not re.fullmatch(r"[\d\s+\-*/().]+", expr):
         return None
@@ -69,8 +66,7 @@ def _safe_arith(expr: str):
         return None
 
     def _ev(n):
-        if isinstance(n, ast.Expression):
-            return _ev(n.body)
+        if isinstance(n, ast.Expression):    return _ev(n.body)
         if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
             return float(n.value)
         if isinstance(n, ast.UnaryOp) and type(n.op) in _BINOPS:
@@ -87,22 +83,19 @@ def _safe_arith(expr: str):
 
 def _extract(text: str) -> float:
     """
-    Extract the final numeric answer from model output.
-
-    Priority order:
-      1. \\boxed{...}    — Qwen2.5-Math CoT native format
-      2. #### N          — GSM8K gold format
-      3. <<expr=N>>      — GSM8K training-tag format
+    Extract final numeric answer.  Priority:
+      1. \\boxed{N}   — Qwen2.5-Math native output
+      2. #### N       — GSM8K gold format
+      3. <<expr=N>>   — GSM8K annotation tags
       4. Contextual keyword scan
       5. Last number fallback
     """
     if not text:
         return float("nan")
 
-    # 1. \boxed{answer}
+    # 1. \boxed{...} — take the last occurrence
     for m in reversed(list(_BOXED_RE.finditer(text))):
-        inner = m.group(1).strip().replace(",", "")
-        # Handle \boxed{72} or \boxed{$72} or \boxed{72.5}
+        inner = m.group(1).strip().replace(",", "").replace("$", "")
         nums = _NUMBER_RE.findall(inner)
         if nums:
             try:
@@ -117,29 +110,29 @@ def _extract(text: str) -> float:
         except ValueError:
             pass
 
-    # 3. <<expr=N>> tags
-    tags = _GSM_TAG_RE.findall(text)
+    # 3. <<expr=N>>
+    tags = _TAG_RE.findall(text)
     if tags:
         try:
             return float(tags[-1])
         except ValueError:
             pass
 
-    # 4. Contextual keyword scan
+    # 4. Contextual keywords
     candidates = []
     for m in re.finditer(
-        r"(?:is|are|equals?|total|left|remaining|need|answer|result|therefore)[^\d-]*(-?\d[\d,]*(?:\.\d+)?)",
+        r"(?:is|are|equals?|total|left|remaining|need|answer|result|therefore)"
+        r"[^\d-]{0,10}(-?\d[\d,]*(?:\.\d+)?)",
         text, re.I
     ):
         try:
             candidates.append(float(m.group(1).replace(",", "")))
         except ValueError:
             pass
-
     if candidates:
         return candidates[-1]
 
-    # 5. Last number in response
+    # 5. Last number
     nums = _NUMBER_RE.findall(text)
     if nums:
         try:
@@ -150,52 +143,18 @@ def _extract(text: str) -> float:
     return float("nan")
 
 
-def _answers_equal(a: float, b: float, tol: float = 1e-6) -> bool:
-    if a != a or b != b:   # NaN check
-        return False
-    return abs(a - b) < tol
-
-
-def _majority_vote(answers: list[float]) -> float:
-    """
-    Return the answer that appears most often (within tolerance).
-    Ties broken by taking the first group found.
-    Returns NaN if all answers are NaN.
-    """
-    valid = [a for a in answers if a == a]  # drop NaN
-    if not valid:
-        return float("nan")
-    if len(valid) == 1:
-        return valid[0]
-
-    # Cluster by tolerance
-    clusters: list[list[float]] = []
-    for v in valid:
-        placed = False
-        for cl in clusters:
-            if _answers_equal(v, cl[0]):
-                cl.append(v)
-                placed = True
-                break
-        if not placed:
-            clusters.append([v])
-
-    # Return centroid of the largest cluster
-    best = max(clusters, key=len)
-    return sum(best) / len(best)
-
-
 # ============================================================================
 # Prompt builder
 # ============================================================================
 
-def _build_messages(question: str) -> list[dict]:
-    """Standard Qwen2.5-Math CoT chat template (no few-shot needed — model is
-    already finetuned on GSM8K-style data)."""
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user",   "content": question},
+def _build_prompt(tokenizer, question: str) -> str:
+    messages = [
+        {"role": "system",  "content": SYSTEM_PROMPT},
+        {"role": "user",    "content": question},
     ]
+    return tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
 
 
 # ============================================================================
@@ -204,12 +163,11 @@ def _build_messages(question: str) -> list[dict]:
 
 class Agent:
     """
-    GSM8K solver using Qwen2.5-Math-1.5B-Instruct with self-consistency voting.
+    Greedy-only GSM8K solver using the math-finetuned Qwen2.5-Math-1.5B-Instruct.
 
-    Strategy:
-      • Generate N_SAMPLES completions per question via batched sampling.
-      • Extract numeric answer from each; pick by majority vote.
-      • If no majority (all different), fall back to greedy decoding answer.
+    All 10 questions are batched into a single forward pass (greedy).
+    Questions that fail to parse (NaN) get one cheap individual retry.
+    Total budget: ~15-25s for a typical batch of 10.
     """
 
     def __init__(self) -> None:
@@ -227,108 +185,54 @@ class Agent:
         )
         self.model.eval()
 
-        # GPU warm-up to avoid cold-start penalty in the timed window.
+        # Warm up to avoid JIT/CUDA init penalty inside timed window.
         if torch.cuda.is_available():
-            dummy = self.tokenizer(
-                "What is 1+1?", return_tensors="pt"
-            ).to(self.model.device)
+            _dummy = self.tokenizer("warm", return_tensors="pt").to(self.model.device)
             with torch.no_grad():
                 self.model.generate(
-                    **dummy,
-                    max_new_tokens=8,
+                    **_dummy, max_new_tokens=1,
                     pad_token_id=self.tokenizer.eos_token_id,
                 )
             torch.cuda.synchronize()
 
     # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
 
-    def answer(
-        self, questions: list[str]
-    ) -> tuple[list[float], list[str]]:
-        """
-        Solve a batch of GSM8K questions.
+    def answer(self, questions: list[str]) -> tuple[list[float], list[str]]:
+        prompts = [_build_prompt(self.tokenizer, q) for q in questions]
 
-        Returns
-        -------
-        solutions : list[float]
-            Numeric answers (NaN on parse failure).
-        traces : list[str]
-            Best (majority-winning) model output per question.
-        """
-        prompts = [
-            self.tokenizer.apply_chat_template(
-                _build_messages(q),
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-            for q in questions
-        ]
+        # ---- Single batched greedy pass ----------------------------------
+        outputs = self._run(prompts, max_new_tokens=MAX_NEW_TOKENS, do_sample=False)
+        solutions = [_extract(o) for o in outputs]
+        traces    = list(outputs)
 
-        # ---- Pass 1: greedy (fast, one answer per question) --------------
-        greedy_outputs = self._generate_batch(prompts, do_sample=False, n=1)
-        greedy_answers = [_extract(o[0]) for o in greedy_outputs]
-        greedy_traces  = [o[0] for o in greedy_outputs]
-
-        # ---- Pass 2: sampled (N_SAMPLES per question, all in one GPU call)
-        # Replicate each prompt N_SAMPLES times so we can batch everything.
-        expanded_prompts = []
-        for p in prompts:
-            expanded_prompts.extend([p] * N_SAMPLES)
-
-        sampled_flat = self._generate_batch(
-            expanded_prompts, do_sample=True, n=1
-        )
-        # sampled_flat[i*N_SAMPLES : (i+1)*N_SAMPLES] → samples for question i
-        sampled_outputs = [
-            [sampled_flat[i * N_SAMPLES + k][0] for k in range(N_SAMPLES)]
-            for i in range(len(questions))
-        ]
-        sampled_answers = [
-            [_extract(o) for o in outs] for outs in sampled_outputs
-        ]
-
-        # ---- Voting ------------------------------------------------------
-        solutions: list[float] = []
-        traces:    list[str]   = []
-
-        for i in range(len(questions)):
-            # Pool: greedy answer + N sampled answers
-            pool_answers = [greedy_answers[i]] + sampled_answers[i]
-            pool_traces  = [greedy_traces[i]]  + sampled_outputs[i]
-
-            voted = _majority_vote(pool_answers)
-
-            # Pick the trace that produced the majority answer (prefer greedy
-            # if it agrees, for cleaner reasoning output).
-            best_trace = greedy_traces[i]
-            for ans, trace in zip(pool_answers, pool_traces):
-                if _answers_equal(ans, voted):
-                    best_trace = trace
-                    break
-
-            solutions.append(voted)
-            traces.append(best_trace)
+        # ---- Individual retry for NaN parses only ------------------------
+        for i, (sol, prompt) in enumerate(zip(solutions, prompts)):
+            if sol != sol:   # NaN
+                retry = self._run(
+                    [prompt],
+                    max_new_tokens=RETRY_MAX_TOKENS,
+                    do_sample=True,
+                    temperature=0.5,
+                    top_p=0.9,
+                )[0]
+                val = _extract(retry)
+                if val == val:   # not NaN → use it
+                    solutions[i] = val
+                    traces[i]    = retry
 
         return solutions, traces
 
     # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
-    def _generate_batch(
+    def _run(
         self,
         prompts: list[str],
         *,
+        max_new_tokens: int,
         do_sample: bool,
-        n: int,
-    ) -> list[list[str]]:
-        """
-        Tokenize `prompts`, generate, decode.
-
-        Returns list[list[str]] of shape (len(prompts), n).
-        """
+        temperature: float = None,
+        top_p: float = None,
+    ) -> list[str]:
         if not prompts:
             return []
 
@@ -337,42 +241,24 @@ class Agent:
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=2048,
+            max_length=1024,   # prompt + answer fits in 1024 for GSM8K
         ).to(self.model.device)
 
         gen_kwargs: dict = dict(
-            max_new_tokens=MAX_NEW_TOKENS,
+            max_new_tokens=max_new_tokens,
             pad_token_id=self.tokenizer.eos_token_id,
             repetition_penalty=1.05,
-            num_return_sequences=n,
         )
         if do_sample:
-            gen_kwargs.update(
-                do_sample=True,
-                temperature=VOTE_TEMPERATURE,
-                top_p=TOP_P,
-            )
+            gen_kwargs.update(do_sample=True, temperature=temperature, top_p=top_p)
         else:
-            gen_kwargs.update(
-                do_sample=False,
-                temperature=None,
-                top_p=None,
-            )
+            gen_kwargs.update(do_sample=False, temperature=None, top_p=None)
 
         with torch.no_grad():
             output_ids = self.model.generate(**inputs, **gen_kwargs)
 
         prompt_len = inputs["input_ids"].shape[1]
-        results: list[list[str]] = []
-
-        # output_ids shape: (len(prompts)*n, seq_len)
-        for i in range(len(prompts)):
-            seqs = []
-            for j in range(n):
-                idx = i * n + j
-                gen = output_ids[idx, prompt_len:]
-                text = self.tokenizer.decode(gen, skip_special_tokens=True)
-                seqs.append(text)
-            results.append(seqs)
-
-        return results
+        return [
+            self.tokenizer.decode(output_ids[i, prompt_len:], skip_special_tokens=True)
+            for i in range(len(prompts))
+        ]
