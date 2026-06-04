@@ -25,7 +25,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 # ============================================================================
 
 MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
-MAX_NEW_TOKENS = 128
+MAX_NEW_TOKENS = 384
 
 SYSTEM_PROMPT = """You are an expert math problem solver.
 
