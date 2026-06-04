@@ -24,7 +24,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 # Constants: Model & Prompting
 # ============================================================================
 
-MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+MODEL_NAME = "Qwen/Qwen3-1.7B"
 MAX_NEW_TOKENS = 384
 
 SYSTEM_PROMPT = """You are an expert at grade-school math word problems.
