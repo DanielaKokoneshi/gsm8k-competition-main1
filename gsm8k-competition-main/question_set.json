@@ -1,0 +1,502 @@
+[
+  {
+    "question": "Kazumi has 47 marbles in a jar and finds 35 more under her bed. She then receives 17 marbles from her cousin and 20 more from a friend. How many marbles does Kazumi have now?",
+    "answer": "Kazumi has 47 + 35 = <<47+35=82>>82 marbles after looking under her bed.\nAfter her cousin gives her 17, she has 82 + 17 = <<82+17=99>>99 marbles.\nWith the 20 from her friend, she has 99 + 20 = <<99+20=119>>119 marbles.\n#### 119",
+    "difficulty": "medium"
+  },
+  {
+    "question": "Mireille bakes 9 trays of muffins for a charity sale. Each tray holds 16 muffins, but 7 muffins break before the sale. How many muffins are left for the sale?",
+    "answer": "Across 9 trays of 16 muffins each, Mireille bakes 9 * 16 = <<9*16=144>>144 muffins.\nAfter 7 break, she has 144 - 7 = <<144-7=137>>137 muffins left for the sale.\n#### 137",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Fjola knits 14 scarves per week for 11 weeks. She also receives 7 scarves as a gift from her aunt. How many scarves does Fjola have in total?",
+    "answer": "Over 11 weeks at 14 scarves per week, Fjola knits 14 * 11 = <<14*11=154>>154 scarves.\nAdding the gift of 7, she has 154 + 7 = <<154+7=161>>161 scarves in total.\n#### 161",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Kasper sells flowers at the market. He sells 47 daisies, 53 tulips, and 66 roses. How many flowers does Kasper sell in total?",
+    "answer": "Adding the three counts, Kasper sells 47 + 53 + 66 = <<47+53+66=166>>166 flowers in total.\n#### 166",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Miroslav planted 13 rows of tomatoes with 13 plants per row in his garden. How many tomato plants does Miroslav have in total?",
+    "answer": "Miroslav planted 13 * 13 = <<13*13=169>>169 tomato plants in total.\n#### 169",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Dusan has 9 stacks of comic books. Each stack has 20 books. He gives 6 books to his cousin. How many comic books does Dusan have left?",
+    "answer": "Dusan starts with 9 * 20 = <<9*20=180>>180 comic books.\nAfter giving 6 away, he has 180 - 6 = <<180-6=174>>174 left.\n#### 174",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Lulama collects buttons from old shirts. She collects 35 buttons on Sunday, 41 on Saturday, and 52 over the rest of the week. She also receives 50 buttons from her aunt. How many buttons does Lulama have?",
+    "answer": "Across the week Lulama collects 35 + 41 + 52 = <<35+41+52=128>>128 buttons.\nAfter her aunt's gift, she has 128 + 50 = <<128+50=178>>178 buttons.\n#### 178",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Adaeze is filling water bottles for a sports team. She fills 14 bottles per crate and finishes 13 crates. How many bottles did Adaeze fill in total?",
+    "answer": "At 14 bottles per crate across 13 crates, Adaeze fills 14 * 13 = <<14*13=182>>182 bottles.\n#### 182",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Ifeoma has 8 boxes of crayons with 25 crayons each. She loses 13 crayons. How many crayons does Ifeoma have left?",
+    "answer": "Ifeoma starts with 8 * 25 = <<8*25=200>>200 crayons.\nAfter losing 13, she has 200 - 13 = <<200-13=187>>187 crayons left.\n#### 187",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Daichi has 7 drawers with 30 socks each. He throws away 17 socks that have holes. How many socks does Daichi have left?",
+    "answer": "Daichi starts with 7 * 30 = <<7*30=210>>210 socks.\nAfter throwing away 17, he has 210 - 17 = <<210-17=193>>193 socks left.\n#### 193",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Soraya gathers walnuts from three trees. She gathers 65, 71, and 61 walnuts from the trees. How many walnuts does Soraya have?",
+    "answer": "Adding the three trees, Soraya gathers 65 + 71 + 61 = <<65+71+61=197>>197 walnuts.\n#### 197",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Bilal folds 25 paper boats per hour for 8 hours, and his friend gives him 2 more boats. How many paper boats does Bilal have?",
+    "answer": "Bilal folds 25 * 8 = <<25*8=200>>200 paper boats during the day.\nAdding the 2 from his friend, he has 200 + 2 = <<200+2=202>>202 paper boats.\n#### 202",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Ishaan reads a comic series. He has 5 volumes with 41 pages each. How many pages of comics does Ishaan have to read in total?",
+    "answer": "Ishaan has 5 * 41 = <<5*41=205>>205 pages of comics to read.\n#### 205",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Ximena buys 9 packs of trading cards. Each pack has 23 cards. How many cards does Ximena have?",
+    "answer": "Ximena has 9 * 23 = <<9*23=207>>207 trading cards in total.\n#### 207",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Cresencio runs laps on the school track. He runs 31 laps each day for 7 days. How many laps did Cresencio complete?",
+    "answer": "At 31 laps per day across 7 days, Cresencio completes 31 * 7 = <<31*7=217>>217 laps.\n#### 217",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Astrian has 73 sheep and triples his flock by trading. How many sheep does Astrian have now?",
+    "answer": "After tripling, Astrian has 73 * 3 = <<73*3=219>>219 sheep.\n#### 219",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Zoran picks oranges from his grove. He picks 50 oranges per hour for 4 hours and 26 more in the last half hour. How many oranges did Zoran pick?",
+    "answer": "Over 4 full hours Zoran picks 50 * 4 = <<50*4=200>>200 oranges.\nAdding the last 26, he has 200 + 26 = <<200+26=226>>226 oranges.\n#### 226",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Yelena hangs paper lanterns around a courtyard. She hangs 21 lanterns on each of 11 walls. How many lanterns did Yelena hang?",
+    "answer": "Yelena hangs 21 * 11 = <<21*11=231>>231 lanterns across the eleven walls.\n#### 231",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Ranveer collects acorns in a basket. He collects 119 acorns and his friend gives him another 119. How many acorns does Ranveer have?",
+    "answer": "After his friend's gift, Ranveer has 119 + 119 = <<119+119=238>>238 acorns.\n#### 238",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Henrik picks blueberries in 11 baskets. Each basket holds 22 blueberries. How many blueberries did Henrik pick?",
+    "answer": "At 22 blueberries per basket across 11 baskets, Henrik picks 22 * 11 = <<22*11=242>>242 blueberries.\n#### 242",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Bjorn fishes in a river. He catches 80 fish on Sunday, 90 on Saturday, and 80 on the weekdays, but releases 3 small ones. How many fish did Bjorn keep?",
+    "answer": "Across the three groups, Bjorn catches 80 + 90 + 80 = <<80+90+80=250>>250 fish.\nAfter releasing 3, he keeps 250 - 3 = <<250-3=247>>247 fish.\n#### 247",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Saskia draws sketches in her notebook. She draws 11 sketches per page across 23 pages. How many sketches did Saskia draw?",
+    "answer": "Saskia draws 11 * 23 = <<11*23=253>>253 sketches across the notebook.\n#### 253",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Eitan trims hedges in 9 yards. Each yard has 29 hedges. How many hedges did Eitan trim in total?",
+    "answer": "Eitan trims 9 * 29 = <<9*29=261>>261 hedges across the nine yards.\n#### 261",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Zayd saves 50 dollars per week for 5 weeks and 13 extra dollars from a birthday gift. How many dollars does Zayd save?",
+    "answer": "Over 5 weeks Zayd saves 50 * 5 = <<50*5=250>>250 dollars.\nAfter the gift, the total is 250 + 13 = <<250+13=263>>263 dollars.\n#### 263",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Folake is decorating cupcakes. She decorates 89 cupcakes per tray and finishes 3 trays. How many cupcakes did Folake decorate?",
+    "answer": "Folake decorates 89 * 3 = <<89*3=267>>267 cupcakes across the three trays.\n#### 267",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Magda counts the seats in a theater. There are 15 rows of 18 seats, but 1 seat is broken. How many seats are available?",
+    "answer": "The theater has 15 * 18 = <<15*18=270>>270 seats in total.\nWith 1 broken, 270 - 1 = <<270-1=269>>269 are available.\n#### 269",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Stoyan is filling fruit baskets. He puts 137 fruits in each of 2 baskets. How many fruits did Stoyan place in the baskets?",
+    "answer": "At 137 fruits per basket across 2 baskets, Stoyan places 137 * 2 = <<137*2=274>>274 fruits.\n#### 274",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Janez paints fence panels. He paints 7 panels per day for 40 days and 1 extra panel before a storm. How many panels did Janez paint?",
+    "answer": "Over 40 days Janez paints 7 * 40 = <<7*40=280>>280 panels.\nAdding the extra panel, the total is 280 + 1 = <<280+1=281>>281 panels.\n#### 281",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Goran picks blackberries from 4 bushes. Each bush gives him 71 blackberries. How many blackberries did Goran pick?",
+    "answer": "Goran picks 4 * 71 = <<4*71=284>>284 blackberries across the four bushes.\n#### 284",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Tanvir folds 6 origami cranes per hour for 48 hours. How many cranes did Tanvir fold in total?",
+    "answer": "Tanvir folds 6 * 48 = <<6*48=288>>288 origami cranes over the 48 hours.\n#### 288",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Devansh saves 50 dollars per month for 6 months and finds 2 extra dollars in his pocket. How many dollars does Devansh have?",
+    "answer": "Over 6 months Devansh saves 50 * 6 = <<50*6=300>>300 dollars.\nAdding the 2 from his pocket, he has 300 + 2 = <<300+2=302>>302 dollars.\n#### 302",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Roya bakes 9 pies for a festival. Each pie is cut into 34 slices. How many slices does Roya make?",
+    "answer": "Roya cuts 9 * 34 = <<9*34=306>>306 slices across the nine pies.\n#### 306",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Rina is collecting empty bottles for recycling. She gathers 102 on Sunday, 102 on Saturday, and 109 over the rest of the week. How many bottles did Rina collect?",
+    "answer": "Adding the three groups, Rina gathers 102 + 102 + 109 = <<102+102+109=313>>313 bottles.\n#### 313",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Sora is stuffing envelopes. She stuffs 4 envelopes per minute for 79 minutes. How many envelopes did Sora stuff?",
+    "answer": "Sora stuffs 4 * 79 = <<4*79=316>>316 envelopes over the 79 minutes.\n#### 316",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Aiko has 11 boxes with 29 erasers each. How many erasers does Aiko have?",
+    "answer": "Aiko has 11 * 29 = <<11*29=319>>319 erasers in total.\n#### 319",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Hina is stringing beads. She uses 19 beads per bracelet and makes 17 bracelets. How many beads did Hina use?",
+    "answer": "At 19 beads per bracelet across 17 bracelets, Hina uses 19 * 17 = <<19*17=323>>323 beads.\n#### 323",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Mikel installs tiles in a kitchen. He installs 8 tiles per row across 41 rows. How many tiles did Mikel install?",
+    "answer": "Mikel installs 8 * 41 = <<8*41=328>>328 tiles across the kitchen.\n#### 328",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Iker has 4 boxes of chalk. Each box has 83 sticks. How many chalk sticks does Iker have?",
+    "answer": "Iker has 4 * 83 = <<4*83=332>>332 chalk sticks in total.\n#### 332",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Iratxe runs a juice stand. She sells 167 cups per day for 2 days. How many cups did Iratxe sell?",
+    "answer": "Over 2 days Iratxe sells 167 * 2 = <<167*2=334>>334 cups of juice.\n#### 334",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Olamide has 13 boxes of envelopes. Each box has 26 envelopes. How many envelopes does Olamide have?",
+    "answer": "Olamide has 13 * 26 = <<13*26=338>>338 envelopes in total.\n#### 338",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Funke buys 29 cartons of eggs. Each carton holds 12 eggs. How many eggs did Funke buy?",
+    "answer": "Funke buys 29 * 12 = <<29*12=348>>348 eggs across the cartons.\n#### 348",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Kunle is delivering newspapers. He delivers 71 papers per route across 5 routes. How many papers did Kunle deliver?",
+    "answer": "Kunle delivers 71 * 5 = <<71*5=355>>355 newspapers across the five routes.\n#### 355",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Femi has 7 bookshelves with 51 books on each shelf. He receives 1 more book as a gift. How many books does Femi have?",
+    "answer": "The shelves hold 7 * 51 = <<7*51=357>>357 books.\nAfter the gift, Femi has 357 + 1 = <<357+1=358>>358 books.\n#### 358",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Adesua is making bookmarks. She makes 19 bookmarks per packet across 19 packets. How many bookmarks did Adesua make?",
+    "answer": "Adesua makes 19 * 19 = <<19*19=361>>361 bookmarks in total.\n#### 361",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Kemi sets up chairs for a wedding. She arranges 11 chairs per row across 33 rows. How many chairs did Kemi set up?",
+    "answer": "Kemi sets up 11 * 33 = <<11*33=363>>363 chairs across the wedding hall.\n#### 363",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Eze has 10 stacks of pancakes with 37 pancakes each. How many pancakes does Eze have?",
+    "answer": "Eze has 10 * 37 = <<10*37=370>>370 pancakes in total.\n#### 370",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Ozioma collects buttons in 4 batches of 89, 92, 96, and 96 buttons. How many buttons does Ozioma have?",
+    "answer": "Adding the four batches: 89 + 92 + 96 + 96 = <<89+92+96+96=373>>373 buttons.\n#### 373",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Otieno has 13 jars of buttons. Each jar has 29 buttons. How many buttons does Otieno have?",
+    "answer": "Otieno has 13 * 29 = <<13*29=377>>377 buttons across the jars.\n#### 377",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Anouk fills 2 photo albums. The first holds 191 photos and the second holds 191 photos. How many photos did Anouk place?",
+    "answer": "Across the two albums, Anouk places 191 * 2 = <<191*2=382>>382 photos.\n#### 382",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Sigrid stacks oranges in pyramids. Each pyramid has 55 oranges and she builds 7 pyramids. How many oranges did Sigrid use?",
+    "answer": "Sigrid uses 55 * 7 = <<55*7=385>>385 oranges to build the seven pyramids.\n#### 385",
+    "difficulty": "easy"
+  },
+  {
+    "question": "Otieno wants to attend a coding camp that costs 400 dollars. His aunt offers to cover half of the cost. He has already saved 24 dollars toward the camp. How much more money does Otieno still need?",
+    "answer": "The aunt covers half of the cost, which is 400 / 2 = <<400/2=200>>200 dollars.\nOtieno still owes the remaining 400 - 200 = <<400-200=200>>200 dollars.\nAfter using his savings, he still needs 200 - 24 = <<200-24=176>>176 dollars.\n#### 176",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Anaya wants to buy a telescope that costs 540 dollars. Her grandfather offers to pay two-fifths of the cost. She has 11 dollars saved toward the rest. How much more money does Anaya still need?",
+    "answer": "The grandfather pays two-fifths of the cost, which is 540 * 2 / 5 = <<540*2/5=216>>216 dollars.\nAnaya still owes the remaining 540 - 216 = <<540-216=324>>324 dollars.\nAfter using her savings, she still needs 324 - 11 = <<324-11=313>>313 dollars.\n#### 313",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Sigrid practiced violin for 20 weeks. She normally practiced 8 hours per week, but on 4 weeks she practiced 10 hours each, and on 2 weeks she practiced 12 hours each. How many hours did Sigrid practice in total?",
+    "answer": "Out of 20 weeks, 4 + 2 = <<4+2=6>>6 weeks were special, leaving 20 - 6 = <<20-6=14>>14 normal weeks.\nThe normal weeks total 14 * 8 = <<14*8=112>>112 hours.\nThe two groups of special weeks total 4 * 10 + 2 * 12 = <<4*10+2*12=64>>64 hours.\nAdding everything, Sigrid practiced 112 + 64 = <<112+64=176>>176 hours.\n#### 176",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Lulama has three tanks of fish. The first tank has 15 more goldfish than the second tank. The third tank holds half as many goldfish as the second tank. In total the three tanks hold 760 goldfish. How many goldfish are in the first tank?",
+    "answer": "Let s be the number of goldfish in the second tank. Then the first tank has s + 15 and the third tank has s / 2 goldfish.\nThe total is s + (s + 15) + s / 2 = 5s / 2 + 15 = 760 goldfish.\nSubtracting 15, 5s / 2 = 760 - 15 = <<760-15=745>>745.\nMultiplying by 2 / 5, s = 745 * 2 / 5 = <<745*2/5=298>>298 goldfish in the second tank.\nThe first tank therefore holds 298 + 15 = <<298+15=313>>313 goldfish.\n#### 313",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Tariq wants to bike three times the distance he biked on Friday and Sunday combined. On Friday he biked 27 kilometers and on Sunday he biked 35 kilometers. How many kilometers does Tariq need to bike today to reach his goal?",
+    "answer": "On Friday and Sunday combined, Tariq biked 27 + 35 = <<27+35=62>>62 kilometers.\nHis goal for today is three times that, which is 62 * 3 = <<62*3=186>>186 kilometers.\n#### 186",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Eldar signs up for 400 art workshops for a total of 476 dollars. His scholarship is revoked if the cost per attended workshop rises above 4 dollars. What is the maximum number of workshops Eldar can miss before his scholarship is revoked?",
+    "answer": "If Eldar misses x workshops, he attends 400 - x workshops, and the cost per attended workshop is 476 / (400 - x).\nFor the scholarship to remain, 476 / (400 - x) must be at most 4, so 400 - x must be at least 476 / 4 = <<476/4=119>>119.\nThat means x is at most 400 - 119 = <<400-119=281>>281 workshops.\n#### 281",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Wenjun has 200 paperback novels and 150 hardcover novels. She gives away one-fifth of her paperbacks and 41 of her hardcover novels. How many novels in total does Wenjun have left?",
+    "answer": "Wenjun gives away 200 / 5 = <<200/5=40>>40 paperbacks, leaving 200 - 40 = <<200-40=160>>160 paperbacks.\nShe gives away 41 hardcovers, leaving 150 - 41 = <<150-41=109>>109 hardcovers.\nIn total, she has 160 + 109 = <<160+109=269>>269 novels left.\n#### 269",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Kasper buys a small bakery for 54 thousand dollars and spends 26 thousand dollars on new equipment. The improvements raise the bakery's value by 175 percent of the original price. How many thousand dollars of profit does Kasper make when he sells the renovated bakery?",
+    "answer": "The original price is 54 thousand dollars, and a 175 percent increase adds 54 * 175 / 100 = <<54*175/100=94.5>>94.5 thousand dollars to the value.\nThe renovated bakery is therefore worth 54 + 94.5 = <<54+94.5=148.5>>148.5 thousand dollars.\nKasper's total cost is 54 + 26 = <<54+26=80>>80 thousand dollars.\nHis profit is 148.5 - 80 = <<148.5-80=68.5>>68.5 thousand dollars.\n#### 68.5",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Imani wants a watch that costs 270 dollars. Her older brother offers to pay one-third of the cost. She has 11 dollars saved toward the watch. How much more money does Imani still need?",
+    "answer": "The brother pays one-third of the cost, which is 270 / 3 = <<270/3=90>>90 dollars.\nImani still owes the remaining 270 - 90 = <<270-90=180>>180 dollars.\nAfter using her savings, she still needs 180 - 11 = <<180-11=169>>169 dollars.\n#### 169",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Femi signs up for 500 violin lessons for a total of 1630 dollars. His grandparents will stop paying if the cost per attended lesson rises above 5 dollars. What is the maximum number of lessons Femi can miss before his grandparents stop paying?",
+    "answer": "If Femi misses x lessons, he attends 500 - x lessons, and the cost per attended lesson is 1630 / (500 - x).\nFor his grandparents to keep paying, 1630 / (500 - x) must be at most 5, so 500 - x must be at least 1630 / 5 = <<1630/5=326>>326.\nThat means x is at most 500 - 326 = <<500-326=174>>174 lessons.\n#### 174",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Saskia joins 350 photography meetups for a total of 726 dollars. The organizer will revoke her access if the cost per attended meetup rises above 6 dollars. What is the maximum number of meetups Saskia can miss before her access is revoked?",
+    "answer": "If Saskia misses x meetups, she attends 350 - x meetups, and the cost per attended meetup is 726 / (350 - x).\nFor her access to remain, 726 / (350 - x) must be at most 6, so 350 - x must be at least 726 / 6 = <<726/6=121>>121.\nThat means x is at most 350 - 121 = <<350-121=229>>229 meetups.\n#### 229",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Daichi has 240 trading cards and 84 stickers. He gives away one-fifth of his trading cards and 57 of his stickers. How many items in total does Daichi have left?",
+    "answer": "Daichi gives away 240 / 5 = <<240/5=48>>48 trading cards, leaving 240 - 48 = <<240-48=192>>192 trading cards.\nHe gives away 57 stickers, leaving 84 - 57 = <<84-57=27>>27 stickers.\nIn total, he has 192 + 27 = <<192+27=219>>219 items left.\n#### 219",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Tanvir buys an old food truck for 200 thousand dollars and spends 39 thousand dollars repainting it. The upgrades increase the truck's value by 100 percent of the original purchase price. How many thousand dollars of profit does Tanvir make when he sells the truck?",
+    "answer": "The original price is 200 thousand dollars, and a 100 percent increase adds 200 * 1 = <<200*1=200>>200 thousand dollars to the value.\nThe upgraded truck is therefore worth 200 + 200 = <<200+200=400>>400 thousand dollars.\nTanvir's total cost is 200 + 39 = <<200+39=239>>239 thousand dollars.\nHis profit is 400 - 239 = <<400-239=161>>161 thousand dollars.\n#### 161",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Ozioma buys an old shed for 140 thousand dollars and spends 33 thousand dollars renovating it. The renovations increase the shed's value by 200 percent of the original price. How many thousand dollars of profit does Ozioma make when she sells the shed?",
+    "answer": "The original price is 140 thousand dollars, and a 200 percent increase adds 140 * 2 = <<140*2=280>>280 thousand dollars to the value.\nThe renovated shed is therefore worth 140 + 280 = <<140+280=420>>420 thousand dollars.\nOzioma's total cost is 140 + 33 = <<140+33=173>>173 thousand dollars.\nHer profit is 420 - 173 = <<420-173=247>>247 thousand dollars.\n#### 247",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Hideo needs 560 dollars for a bicycle. His parents agree to pay five-eighths of the cost. He has saved 43 dollars toward the bicycle. How many more dollars does Hideo still need?",
+    "answer": "The parents pay five-eighths of the cost, which is 560 * 5 / 8 = <<560*5/8=350>>350 dollars.\nHideo still owes the remaining 560 - 350 = <<560-350=210>>210 dollars.\nAfter using his savings, he still needs 210 - 43 = <<210-43=167>>167 dollars.\n#### 167",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Tomoka wants a telescope that costs 384 dollars. Her aunt offers to pay five-twelfths of the cost. She has 63 dollars saved toward the telescope. How much more money does Tomoka still need?",
+    "answer": "The aunt pays five-twelfths of the cost, which is 384 * 5 / 12 = <<384*5/12=160>>160 dollars.\nTomoka still owes the remaining 384 - 160 = <<384-160=224>>224 dollars.\nAfter using her savings, she still needs 224 - 63 = <<224-63=161>>161 dollars.\n#### 161",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Rina wants a music keyboard costing 640 dollars. Her parents agree to pay three-quarters of the cost. She has 41 dollars saved toward the keyboard. How much more money does Rina still need?",
+    "answer": "The parents pay three-quarters of the cost, which is 640 * 3 / 4 = <<640*3/4=480>>480 dollars.\nRina still owes the remaining 640 - 480 = <<640-480=160>>160 dollars.\nAfter using her savings, she still needs 160 - 41 = <<160-41=119>>119 dollars.\n#### 119",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Tafadzwa wants a camera that costs 810 dollars. Her brother offers to pay five-ninths of the cost. She has 26 dollars saved toward the camera. How much more does Tafadzwa still need?",
+    "answer": "The brother pays five-ninths of the cost, which is 810 * 5 / 9 = <<810*5/9=450>>450 dollars.\nTafadzwa still owes the remaining 810 - 450 = <<810-450=360>>360 dollars.\nAfter using her savings, she still needs 360 - 26 = <<360-26=334>>334 dollars.\n#### 334",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Saskia needs a dryer that costs 720 dollars. Her father offers to cover seven-twelfths of the cost. She has 26 dollars saved toward the dryer. How much more does Saskia still need?",
+    "answer": "The father covers seven-twelfths of the cost, which is 720 * 7 / 12 = <<720*7/12=420>>420 dollars.\nSaskia still owes the remaining 720 - 420 = <<720-420=300>>300 dollars.\nAfter using her savings, she still needs 300 - 26 = <<300-26=274>>274 dollars.\n#### 274",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Cresencio went to fencing class for 24 weeks. He normally went 8 hours per week, but on 5 weeks he went 11 hours each, and on 3 weeks he went 13 hours each. How many hours of fencing did Cresencio do in total?",
+    "answer": "Out of 24 weeks, 5 + 3 = <<5+3=8>>8 weeks were special, leaving 24 - 8 = <<24-8=16>>16 normal weeks.\nThe normal weeks total 16 * 8 = <<16*8=128>>128 hours.\nThe two groups of special weeks total 5 * 11 + 3 * 13 = <<5*11+3*13=94>>94 hours.\nAdding everything, Cresencio went 128 + 94 = <<128+94=222>>222 hours.\n#### 222",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Astrian led hiking trips for 30 weeks. He normally led 7 hours per week, but on 6 weeks he led 10 hours each, and on 2 weeks he led 14 hours each. How many hours did Astrian lead trips in total?",
+    "answer": "Out of 30 weeks, 6 + 2 = <<6+2=8>>8 weeks were special, leaving 30 - 8 = <<30-8=22>>22 normal weeks.\nThe normal weeks total 22 * 7 = <<22*7=154>>154 hours.\nThe two groups of special weeks total 6 * 10 + 2 * 14 = <<6*10+2*14=88>>88 hours.\nAdding everything, Astrian led 154 + 88 = <<154+88=242>>242 hours.\n#### 242",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Zoran ran a chess club for 24 weeks. He normally ran it 5 hours per week, but on 5 weeks he ran it 8 hours each, and on 2 weeks he ran it 13 hours each. How many hours did Zoran run the club in total?",
+    "answer": "Out of 24 weeks, 5 + 2 = <<5+2=7>>7 weeks were special, leaving 24 - 7 = <<24-7=17>>17 normal weeks.\nThe normal weeks total 17 * 5 = <<17*5=85>>85 hours.\nThe two groups of special weeks total 5 * 8 + 2 * 13 = <<5*8+2*13=66>>66 hours.\nAdding everything, Zoran ran the club 85 + 66 = <<85+66=151>>151 hours.\n#### 151",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Priya gardened for 19 weeks. She normally gardened 6 hours per week, but on 4 weeks she gardened 11 hours each, and on 1 week she gardened 9 hours. How many hours did Priya garden in total?",
+    "answer": "Out of 19 weeks, 4 + 1 = <<4+1=5>>5 weeks were special, leaving 19 - 5 = <<19-5=14>>14 normal weeks.\nThe normal weeks total 14 * 6 = <<14*6=84>>84 hours.\nThe two groups of special weeks total 4 * 11 + 1 * 9 = <<4*11+1*9=53>>53 hours.\nAdding everything, Priya gardened 84 + 53 = <<84+53=137>>137 hours.\n#### 137",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Eitan has three jars of olives. The first jar has 9 more olives than the second jar. The third jar holds one-quarter as many olives as the second jar. In total the three jars hold 657 olives. How many olives are in the first jar?",
+    "answer": "Let s be the number of olives in the second jar. Then the first jar has s + 9 and the third jar has s / 4 olives.\nThe total is s + (s + 9) + s / 4 = 9s / 4 + 9 = 657 olives.\nSubtracting 9, 9s / 4 = 657 - 9 = <<657-9=648>>648.\nMultiplying by 4 / 9, s = 648 * 4 / 9 = <<648*4/9=288>>288 olives in the second jar.\nThe first jar therefore holds 288 + 9 = <<288+9=297>>297 olives.\n#### 297",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Folake has three baskets of yarn. The first basket has 5 fewer balls than the second basket. The third basket holds half as many balls as the second basket. In total the three baskets hold 305 balls of yarn. How many balls are in the first basket?",
+    "answer": "Let s be the number of balls in the second basket. Then the first basket has s - 5 and the third basket has s / 2 balls.\nThe total is s + (s - 5) + s / 2 = 5s / 2 - 5 = 305 balls.\nAdding 5, 5s / 2 = 305 + 5 = <<305+5=310>>310.\nMultiplying by 2 / 5, s = 310 * 2 / 5 = <<310*2/5=124>>124 balls in the second basket.\nThe first basket therefore holds 124 - 5 = <<124-5=119>>119 balls.\n#### 119",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Onyeka has three sacks of grain. The first sack has 20 more kilograms than the second sack. The third sack holds two-thirds as many kilograms as the second sack. In total the three sacks hold 476 kilograms. How many kilograms are in the first sack?",
+    "answer": "Let s be the number of kilograms in the second sack. Then the first sack has s + 20 and the third sack has 2s / 3 kilograms.\nThe total is s + (s + 20) + 2s / 3 = 8s / 3 + 20 = 476 kilograms.\nSubtracting 20, 8s / 3 = 476 - 20 = <<476-20=456>>456.\nMultiplying by 3 / 8, s = 456 * 3 / 8 = <<456*3/8=171>>171 kilograms in the second sack.\nThe first sack therefore holds 171 + 20 = <<171+20=191>>191 kilograms.\n#### 191",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Stoyan has three buckets of acorns. The first bucket has 9 more acorns than the second bucket. The third bucket holds one-sixth as many acorns as the second bucket. In total the three buckets hold 438 acorns. How many acorns are in the first bucket?",
+    "answer": "Let s be the number of acorns in the second bucket. Then the first bucket has s + 9 and the third bucket has s / 6 acorns.\nThe total is s + (s + 9) + s / 6 = 13s / 6 + 9 = 438 acorns.\nSubtracting 9, 13s / 6 = 438 - 9 = <<438-9=429>>429.\nMultiplying by 6 / 13, s = 429 * 6 / 13 = <<429*6/13=198>>198 acorns in the second bucket.\nThe first bucket therefore holds 198 + 9 = <<198+9=207>>207 acorns.\n#### 207",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Sayaka wants to run for three times the time she ran on Tuesday and Saturday combined. She ran 28 minutes on Tuesday and 41 minutes on Saturday. How many minutes does Sayaka need to run today to reach her goal?",
+    "answer": "On Tuesday and Saturday combined, Sayaka ran 28 + 41 = <<28+41=69>>69 minutes.\nHer goal for today is three times that, which is 69 * 3 = <<69*3=207>>207 minutes.\n#### 207",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Janez wants to bike twice the distance he biked on Tuesday and Thursday combined. He biked 84 kilometers on Tuesday and 59 kilometers on Thursday. How many kilometers does Janez need to bike today to reach his goal?",
+    "answer": "On Tuesday and Thursday combined, Janez biked 84 + 59 = <<84+59=143>>143 kilometers.\nHis goal for today is twice that, which is 143 * 2 = <<143*2=286>>286 kilometers.\n#### 286",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Aitor wants to read twice as many pages today as he read on Monday, Wednesday, and Friday combined. He read 28 pages on Monday, 31 on Wednesday, and 34 on Friday. How many pages does Aitor need to read today to reach his goal?",
+    "answer": "Across the three days, Aitor read 28 + 31 + 34 = <<28+31+34=93>>93 pages.\nHis goal for today is twice that, which is 93 * 2 = <<93*2=186>>186 pages.\n#### 186",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Eze enrolls in 320 painting workshops for a total of 1064 dollars. His patron will stop funding if the cost per attended workshop rises above 8 dollars. What is the maximum number of workshops Eze can miss before his patron stops funding?",
+    "answer": "If Eze misses x workshops, he attends 320 - x workshops, and the cost per attended workshop is 1064 / (320 - x).\nFor the patron to keep paying, 1064 / (320 - x) must be at most 8, so 320 - x must be at least 1064 / 8 = <<1064/8=133>>133.\nThat means x is at most 320 - 133 = <<320-133=187>>187 workshops.\n#### 187",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Yetunde enrolls in 250 conversation lessons for a total of 1130 dollars. Her teacher will stop teaching if the cost per attended lesson rises above 10 dollars. What is the maximum number of lessons Yetunde can miss before her teacher stops?",
+    "answer": "If Yetunde misses x lessons, she attends 250 - x lessons, and the cost per attended lesson is 1130 / (250 - x).\nFor the teacher to continue, 1130 / (250 - x) must be at most 10, so 250 - x must be at least 1130 / 10 = <<1130/10=113>>113.\nThat means x is at most 250 - 113 = <<250-113=137>>137 lessons.\n#### 137",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Kemi joins 420 study sessions for a total of 884 dollars. Her tutor will stop teaching if the cost per attended session rises above 4 dollars. What is the maximum number of sessions Kemi can miss before her tutor stops?",
+    "answer": "If Kemi misses x sessions, she attends 420 - x sessions, and the cost per attended session is 884 / (420 - x).\nFor her tutor to keep teaching, 884 / (420 - x) must be at most 4, so 420 - x must be at least 884 / 4 = <<884/4=221>>221.\nThat means x is at most 420 - 221 = <<420-221=199>>199 sessions.\n#### 199",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Ozioma signs up for 600 farmer's market entries for a total of 632 dollars. Her sponsor will stop paying if the cost per attended entry rises above 2 dollars. What is the maximum number of entries Ozioma can miss before her sponsor stops?",
+    "answer": "If Ozioma misses x entries, she attends 600 - x entries, and the cost per attended entry is 632 / (600 - x).\nFor her sponsor to keep paying, 632 / (600 - x) must be at most 2, so 600 - x must be at least 632 / 2 = <<632/2=316>>316.\nThat means x is at most 600 - 316 = <<600-316=284>>284 entries.\n#### 284",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Mikel has 200 spoons and 120 forks. He gives away one-eighth of his spoons and 78 of his forks. How many items in total does Mikel have left?",
+    "answer": "Mikel gives away 200 / 8 = <<200/8=25>>25 spoons, leaving 200 - 25 = <<200-25=175>>175 spoons.\nHe gives away 78 forks, leaving 120 - 78 = <<120-78=42>>42 forks.\nIn total, he has 175 + 42 = <<175+42=217>>217 items left.\n#### 217",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Iratxe has 250 stickers and 105 stamps. She gives away two-fifths of her stickers and 26 of her stamps. How many items in total does Iratxe have left?",
+    "answer": "Iratxe gives away 250 * 2 / 5 = <<250*2/5=100>>100 stickers, leaving 250 - 100 = <<250-100=150>>150 stickers.\nShe gives away 26 stamps, leaving 105 - 26 = <<105-26=79>>79 stamps.\nIn total, she has 150 + 79 = <<150+79=229>>229 items left.\n#### 229",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Olamide has 300 nails and 84 screws. She gives away one-quarter of her nails and 25 of her screws. How many items in total does Olamide have left?",
+    "answer": "Olamide gives away 300 / 4 = <<300/4=75>>75 nails, leaving 300 - 75 = <<300-75=225>>225 nails.\nShe gives away 25 screws, leaving 84 - 25 = <<84-25=59>>59 screws.\nIn total, she has 225 + 59 = <<225+59=284>>284 items left.\n#### 284",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Funke has 96 toys, 84 books, and 60 dolls. She gives away one-quarter of her toys, one-seventh of her books, and 8 of her dolls. How many items in total does Funke have left?",
+    "answer": "Funke gives away 96 / 4 = <<96/4=24>>24 toys, leaving 96 - 24 = <<96-24=72>>72 toys.\nShe gives away 84 / 7 = <<84/7=12>>12 books, leaving 84 - 12 = <<84-12=72>>72 books.\nShe gives away 8 dolls, leaving 60 - 8 = <<60-8=52>>52 dolls.\nIn total, she has 72 + 72 + 52 = <<72+72+52=196>>196 items left.\n#### 196",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Bisi buys a small studio for 120 thousand dollars and spends 31 thousand dollars on renovations. The renovations raise the studio's value by 125 percent of the original price. How many thousand dollars of profit does Bisi make when she sells the studio?",
+    "answer": "The original price is 120 thousand dollars, and a 125 percent increase adds 120 * 125 / 100 = <<120*125/100=150>>150 thousand dollars to the value.\nThe renovated studio is therefore worth 120 + 150 = <<120+150=270>>270 thousand dollars.\nBisi's total cost is 120 + 31 = <<120+31=151>>151 thousand dollars.\nHer profit is 270 - 151 = <<270-151=119>>119 thousand dollars.\n#### 119",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Ishaan buys a vacant lot for 320 thousand dollars and spends 56 thousand dollars developing it. The development raises the lot's value by 60 percent of the original price. How many thousand dollars of profit does Ishaan make when he sells the lot?",
+    "answer": "The original price is 320 thousand dollars, and a 60 percent increase adds 320 * 60 / 100 = <<320*60/100=192>>192 thousand dollars to the value.\nThe developed lot is therefore worth 320 + 192 = <<320+192=512>>512 thousand dollars.\nIshaan's total cost is 320 + 56 = <<320+56=376>>376 thousand dollars.\nHis profit is 512 - 376 = <<512-376=136>>136 thousand dollars.\n#### 136",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Ximena buys a tiny apartment for 78 thousand dollars and spends 29 thousand dollars on upgrades. The upgrades raise the apartment's value by 250 percent of the original price. How many thousand dollars of profit does Ximena make when she sells the apartment?",
+    "answer": "The original price is 78 thousand dollars, and a 250 percent increase adds 78 * 250 / 100 = <<78*250/100=195>>195 thousand dollars to the value.\nThe upgraded apartment is therefore worth 78 + 195 = <<78+195=273>>273 thousand dollars.\nXimena's total cost is 78 + 29 = <<78+29=107>>107 thousand dollars.\nHer profit is 273 - 107 = <<273-107=166>>166 thousand dollars.\n#### 166",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Roya buys a small store for 180 thousand dollars and spends 40 thousand dollars renovating it. The renovations raise the store's value by 120 percent of the original price. How many thousand dollars of profit does Roya make when she sells the store?",
+    "answer": "The original price is 180 thousand dollars, and a 120 percent increase adds 180 * 120 / 100 = <<180*120/100=216>>216 thousand dollars to the value.\nThe renovated store is therefore worth 180 + 216 = <<180+216=396>>396 thousand dollars.\nRoya's total cost is 180 + 40 = <<180+40=220>>220 thousand dollars.\nHer profit is 396 - 220 = <<396-220=176>>176 thousand dollars.\n#### 176",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Bjorn's water utility charges 30 dollars as a flat fee for the first 100 gallons of the month and 2 dollars for each gallon above 100. In the most recent month, Bjorn used 174 gallons. How many dollars is his bill?",
+    "answer": "Bjorn used 174 - 100 = <<174-100=74>>74 gallons beyond the first 100 included in the flat fee.\nThe extra gallons cost 74 * 2 = <<74*2=148>>148 dollars.\nAdding the flat fee, his bill is 30 + 148 = <<30+148=178>>178 dollars.\n#### 178",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Anouk's electricity is charged in three tiers: the first 200 kWh cost 0.20 dollars each, the next 200 kWh cost 0.30 dollars each, and every kWh above 400 costs 0.50 dollars. In the most recent month, Anouk used 738 kWh. How many dollars is her bill?",
+    "answer": "The first 200 kWh cost 200 * 0.20 = <<200*0.20=40>>40 dollars.\nThe next 200 kWh cost 200 * 0.30 = <<200*0.30=60>>60 dollars.\nBeyond 400 kWh, she used 738 - 400 = <<738-400=338>>338 kWh at 0.50 dollars each, costing 338 * 0.50 = <<338*0.50=169>>169 dollars.\nAdding all tiers, her bill is 40 + 60 + 169 = <<40+60+169=269>>269 dollars.\n#### 269",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Yuki's mobile plan provides the first 10 gigabytes of data for free each month, charges 3 dollars per gigabyte for the next 20 gigabytes, and 4 dollars per gigabyte above 30 gigabytes. In the most recent month, Yuki used 49 gigabytes. How many dollars is her bill?",
+    "answer": "The first 10 gigabytes cost 10 * 0 = <<10*0=0>>0 dollars.\nThe next 20 gigabytes cost 20 * 3 = <<20*3=60>>60 dollars.\nBeyond 30 gigabytes, she used 49 - 30 = <<49-30=19>>19 gigabytes at 4 dollars each, costing 19 * 4 = <<19*4=76>>76 dollars.\nAdding all tiers, her bill is 0 + 60 + 76 = <<0+60+76=136>>136 dollars.\n#### 136",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Mireille bought a printer at 25 percent off and paid 132 dollars. What was the original price of the printer in dollars?",
+    "answer": "After a 25 percent discount, Mireille paid 100 - 25 = <<100-25=75>>75 percent of the original price.\nSo 75 percent of the original price equals 132 dollars.\nThe original price is therefore 132 / 0.75 = <<132/0.75=176>>176 dollars.\n#### 176",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Linnea received a 50 percent raise. Her new weekly pay is 333 dollars. What was her original weekly pay in dollars?",
+    "answer": "After a 50 percent raise, Linnea's new pay is 100 + 50 = <<100+50=150>>150 percent of her original pay.\nSo 150 percent of her original weekly pay equals 333 dollars.\nHer original weekly pay is therefore 333 / 1.50 = <<333/1.50=222>>222 dollars.\n#### 222",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Daichi assembles 8 widgets per hour. Hina assembles 11 widgets per hour. They assemble widgets side by side for 13 hours. How many widgets do they assemble in total?",
+    "answer": "Together, their combined rate is 8 + 11 = <<8+11=19>>19 widgets per hour.\nOver 13 hours, they assemble 19 * 13 = <<19*13=247>>247 widgets in total.\n#### 247",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Ifeoma can fill a tank by herself in 24 hours. Devansh can fill the same tank by himself in 6 hours. If they fill the tank together, how many minutes does it take?",
+    "answer": "Ifeoma's rate is 1 / 24 of the tank per hour, and Devansh's rate is 1 / 6 of the tank per hour.\nTheir combined rate is 1 / 24 + 1 / 6 = 1 / 24 + 4 / 24 = 5 / 24 of the tank per hour.\nFilling the whole tank therefore takes 24 / 5 hours, which is 24 * 60 / 5 = <<24*60/5=288>>288 minutes.\n#### 288",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Anouk bought a printer priced at 480 dollars. The store first applied a 25 percent discount, then a 20 percent coupon on the already-discounted price. How many dollars did Anouk end up paying?",
+    "answer": "After the 25 percent discount, the price became 480 * (100 - 25) / 100 = <<480*(100-25)/100=360>>360 dollars.\nThe 20 percent coupon then reduced the price to 360 * (100 - 20) / 100 = <<360*(100-20)/100=288>>288 dollars.\n#### 288",
+    "difficulty": "hard"
+  }
+]

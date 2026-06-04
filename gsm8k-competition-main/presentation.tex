@@ -1,0 +1,384 @@
+\documentclass[aspectratio=169]{beamer}
+
+\usetheme{Madrid}
+\usecolortheme{default}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+
+% Custom colors
+\definecolor{mainblue}{RGB}{0,70,140}
+\setbeamercolor{palette primary}{bg=mainblue,fg=white}
+\setbeamercolor{palette secondary}{bg=mainblue!80,fg=white}
+\setbeamercolor{palette tertiary}{bg=mainblue!60,fg=white}
+\setbeamercolor{palette quaternary}{bg=mainblue,fg=white}
+\setbeamercolor{structure}{fg=mainblue}
+\setbeamercolor{section in toc}{fg=mainblue}
+
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}[frame number]
+
+% -------------------------------------------------------
+\title{SSL Pretraining Study with Primate Data\\for Human Speech Decoding}
+\author{Sergio López}
+\date{}
+% -------------------------------------------------------
+
+\begin{document}
+
+\begin{frame}
+  \titlepage
+\end{frame}
+
+% ---- OUTLINE -------------------------------------------
+\begin{frame}{Outline}
+  \tableofcontents
+\end{frame}
+
+% ========================================================
+\section{Introduction}
+% ========================================================
+
+\begin{frame}{Introduction — Kaggle Brain-to-Text '25}
+  \begin{columns}
+    \begin{column}{0.55\textwidth}
+      \begin{itemize}
+        \item \textbf{Task:} Speech BCI to restore communication of paralysed patients
+        \item \textbf{Goal:} Neural Activity $\rightarrow$ Text
+        \item \textbf{Competition metric:} Word Error Rate (WER)
+        \item \textbf{Our focus:} Phoneme Error Rate (PER)
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.4\textwidth}
+      % Insert competition overview figure here
+      \begin{center}
+        \fbox{\parbox{0.9\textwidth}{\centering\small [Figure: BCI overview]}}
+      \end{center}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ========================================================
+\section{Dataset}
+% ========================================================
+
+\begin{frame}{Dataset — Participant T15}
+  \begin{columns}
+    \begin{column}{0.55\textwidth}
+      \begin{itemize}
+        \item $\sim$11\,000 sentences recorded over 20 months
+        \item 256 microelectrodes in speech motor cortex
+        \item Time bins: 20\,ms (50\,Hz)
+        \item Multiple sentence corpora:
+          \begin{itemize}
+            \item 50-word vocabulary
+            \item Switchboard, OpenWebText
+            \item Harvard sentences, random words
+          \end{itemize}
+        \item Two speaking strategies:
+          \begin{itemize}
+            \item Vocalized ($\sim$30 wpm)
+            \item Silent ($\sim$50 wpm)
+          \end{itemize}
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.4\textwidth}
+      \begin{center}
+        \fbox{\parbox{0.9\textwidth}{\centering\small [Figure: electrode array / recording setup]}}
+      \end{center}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ========================================================
+\section{Competition Work}
+% ========================================================
+
+\begin{frame}{My Competition Work — Improvements to the Baseline}
+  \begin{columns}
+    \begin{column}{0.5\textwidth}
+      \textbf{Optimisations applied:}
+      \begin{itemize}
+        \item Cosine LR scheduling
+        \item Speckled masking
+        \item Hyperparameter tuning:
+          \begin{itemize}
+            \item Dropout: 0.2
+            \item Learning rate: 0.004
+            \item Batch size: 32
+          \end{itemize}
+      \end{itemize}
+      \vspace{0.5em}
+      \begin{block}{Result}
+        \centering $\downarrow$ PER = \textbf{0.097}
+      \end{block}
+    \end{column}
+    \begin{column}{0.45\textwidth}
+      \begin{center}
+        \fbox{\parbox{0.9\textwidth}{\centering\small [Figure: training curves]}}
+      \end{center}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ========================================================
+\section{Motivation: The BIT Paper}
+% ========================================================
+
+\begin{frame}{Motivation — The BIT Paper}
+  \begin{columns}
+    \begin{column}{0.55\textwidth}
+      \textbf{BIT (Ye et al., 2025):}
+      \begin{itemize}
+        \item Pretrained transformer with human + NHP data
+        \item PER of \textbf{7.12\%} on T15
+      \end{itemize}
+      \vspace{0.8em}
+      \textbf{Non-human primate (NHP) data:}
+      \begin{itemize}
+        \item Abundant and publicly available
+        \item Recorded with Utah array technology
+      \end{itemize}
+      \vspace{0.8em}
+      \begin{alertblock}{Research Question}
+        Can we improve a human speech decoder using \textbf{only NHP data} for pretraining?
+      \end{alertblock}
+    \end{column}
+    \begin{column}{0.4\textwidth}
+      \begin{center}
+        \fbox{\parbox{0.9\textwidth}{\centering\small [Figure: BIT architecture / NHP illustration]}}
+      \end{center}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ========================================================
+\section{NHP Datasets}
+% ========================================================
+
+\begin{frame}{Non-Human Primate Datasets}
+  \begin{columns}
+    \begin{column}{0.55\textwidth}
+      \textbf{200 hours of NHP data} across tasks:
+      \begin{itemize}
+        \item Reaching
+        \item Fine motor
+        \item Somatosensory
+      \end{itemize}
+      \vspace{0.5em}
+      \textbf{Preprocessing (from BIT):}
+      \begin{itemize}
+        \item 20\,ms time bins
+        \item Z-scoring across days
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.4\textwidth}
+      \begin{center}
+        \fbox{\parbox{0.9\textwidth}{\centering\small [Figure: NHP dataset overview]}}
+      \end{center}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ========================================================
+\section{GRU SSL Pretraining}
+% ========================================================
+
+\begin{frame}{GRU SSL Pretraining — Method}
+  \begin{columns}
+    \begin{column}{0.5\textwidth}
+      \textbf{Pretraining (on NHP data):}
+      \begin{itemize}
+        \item Causal next-step prediction
+        \item MSE loss on next 3 patches
+      \end{itemize}
+      \vspace{0.5em}
+      \textbf{Transfer to human data:}
+      \begin{itemize}
+        \item GRU weights transferred
+        \item Day-specific input layer reinitialized
+        \item CTC head reinitialized
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.45\textwidth}
+      \begin{center}
+        \fbox{\parbox{0.9\textwidth}{\centering\small [Figure: GRU pretraining diagram]}}
+      \end{center}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{GRU SSL Pretraining — Results}
+  \begin{columns}
+    \begin{column}{0.5\textwidth}
+      \begin{table}
+        \centering
+        \begin{tabular}{lc}
+          \toprule
+          \textbf{Dataset} & \textbf{PER} \\
+          \midrule
+          GRU control (no SSL) & 0.097 \\
+          Somatosensory        & 0.724 \\
+          Fine motor           & 0.718 \\
+          Reaching             & 0.140 \\
+          All NHP              & 0.136 \\
+          \bottomrule
+        \end{tabular}
+      \end{table}
+    \end{column}
+    \begin{column}{0.45\textwidth}
+      \begin{alertblock}{Why SSL fails on GRU}
+        Recurrent dynamics are coupled to input distribution — transfer breaks when going NHP $\to$ human.
+      \end{alertblock}
+      \vspace{0.4em}
+      \small
+      Churchland et al.\ 2012 (``Neural population dynamics during reaching'', \textit{Nature}) \\
+      BIT (Ye et al.\ 2025)
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ========================================================
+\section{Transformer Approach}
+% ========================================================
+
+\begin{frame}{Building Our Transformer}
+  \begin{columns}
+    \begin{column}{0.5\textwidth}
+      \textbf{BIT transformer:}
+      \begin{itemize}
+        \item Works with SSL
+        \item Beats GRU baseline
+        \item NHP $\to$ human transfer works
+      \end{itemize}
+      \vspace{0.5em}
+      \textbf{Our additions:}
+      \begin{itemize}
+        \item Day-specific input layer
+        \item Aggressive augmentation (noise=0.8, offset=0.2)
+        \item Log-transform on input features
+        \item HP tuning: lr=$3\times10^{-4}$, WD=$5\times10^{-4}$, batch=32
+      \end{itemize}
+      \vspace{0.4em}
+      \begin{block}{Result}
+        \centering $\downarrow$ PER = \textbf{0.097} (matches optimised GRU)
+      \end{block}
+    \end{column}
+    \begin{column}{0.45\textwidth}
+      \begin{center}
+        \fbox{\parbox{0.9\textwidth}{\centering\small [Figure: transformer architecture]}}
+      \end{center}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{SSL Pretraining with Transformer}
+  \begin{columns}
+    \begin{column}{0.5\textwidth}
+      \begin{itemize}
+        \item Pretraining loss and $R^2$ do \textbf{not} predict PER
+        \item Evaluated every few pretraining epochs with short fine-tuning on human data
+      \end{itemize}
+      \vspace{0.5em}
+      \textbf{PER at intermediate checkpoints:}
+      \begin{itemize}
+        \item Ep.\ 50:  0.169
+        \item Ep.\ 100: 0.160
+        \item Ep.\ 150: 0.146
+        \item Ep.\ 200: 0.152
+        \item Ep.\ 250: 0.165
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.45\textwidth}
+      \begin{center}
+        \fbox{\parbox{0.9\textwidth}{\centering\small [Figure: pretraining loss vs.\ PER curves]}}
+      \end{center}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{SSL Study — PER at 30k Batches}
+  \begin{table}
+    \centering
+    \begin{tabular}{lcccc}
+      \toprule
+      \textbf{Dataset} & \textbf{Hours} & \textbf{Masked SSL} & \textbf{AR binary} \\
+      \midrule
+      Control (no SSL)  & ---   & 0.124              & 0.124 \\
+      Reaching          & 117h  & 0.142              & 0.129 \\
+      Fine motor        & 68h   & 0.203              & 0.437 \\
+      Somatosensory     & 10h   & 0.124 (= control)  & \textbf{0.118} \\
+      All NHP           & 200h  & 0.137              & 0.138 \\
+      \bottomrule
+    \end{tabular}
+    \caption{PER values after fine-tuning on T15 (30k batches)}
+  \end{table}
+\end{frame}
+
+% ========================================================
+\section{Best Result}
+% ========================================================
+
+\begin{frame}{Best Result}
+  \begin{columns}
+    \begin{column}{0.55\textwidth}
+      \begin{itemize}
+        \item \textbf{Best checkpoint:} AR binary somatosensory, epoch 400
+        \item Full fine-tuning: 400k batches on T15
+      \end{itemize}
+      \vspace{0.6em}
+      \begin{block}{Final PER}
+        \centering \Large PER = \textbf{0.0887}
+      \end{block}
+      \vspace{0.6em}
+      \begin{exampleblock}{Improvement}
+        \centering \textbf{8.6\% improvement} over TFS baseline (0.097)
+      \end{exampleblock}
+    \end{column}
+    \begin{column}{0.4\textwidth}
+      \begin{center}
+        \fbox{\parbox{0.9\textwidth}{\centering\small [Figure: final fine-tuning curve]}}
+      \end{center}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ========================================================
+\section{Next Steps}
+% ========================================================
+
+\begin{frame}{Possible Next Steps}
+  \begin{columns}
+    \begin{column}{0.48\textwidth}
+      \textbf{Verify robustness:}
+      \begin{itemize}
+        \item Is the gain due to dataset size?
+        \item Multi-seed fine-tuning to confirm best result is not seed-dependent
+      \end{itemize}
+      \vspace{0.5em}
+      \textbf{Expand SSL comparison:}
+      \begin{itemize}
+        \item Additional SSL techniques on the full dataset grid
+        \item Combination of NHP groups
+        \item Other cortical areas?
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \textbf{Deeper analysis:}
+      \begin{itemize}
+        \item Why does \textit{somatosensory} cortex transfer but motor cortex does not?
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ========================================================
+\begin{frame}
+  \centering
+  \Large\textbf{Thank you!}\\[1em]
+  \normalsize Questions?
+\end{frame}
+
+\end{document}
