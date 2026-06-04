@@ -27,27 +27,25 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 # Qwen2.5-1.5B-Instruct is pre-cached on ML Arena platform and optimized
 # for 60s batches of ~10 questions each.
 MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
-MAX_NEW_TOKENS = 384
+MAX_NEW_TOKENS = 128
 
 SYSTEM_PROMPT = """You are an expert at grade-school math word problems.
-Solve each problem with clear arithmetic steps (use expressions like 48/2 = 24).
+Solve using short arithmetic steps.
+Use at most 5 lines.
 End with exactly one line: #### <final integer answer>
 Do not add text after the #### line."""
 
 # 3-shot examples train the model to follow the format reliably.
 FEW_SHOT = [
     (
-        "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?",
-        "Natalia sold 48/2 = 24 clips in May.\nNatalia sold 48+24 = 72 clips altogether in April and May.\n#### 72",
-    ),
-    (
-        "Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn?",
-        "Weng earns 12/60 = $0.2 per minute.\nWorking 50 minutes, she earned 0.2 * 50 = $10.\n#### 10",
-    ),
-    (
-        "Betty is saving money for a new wallet which costs $100. Betty has only half of the money she needs. Her parents decided to give her $15 for that purpose, and her grandparents twice as much as her parents. How much more money does Betty need to buy the wallet?",
-        "In the beginning, Betty has 100/2 = $50.\nBetty's grandparents gave her 15*2 = $30.\nThis means Betty needs 100 - 50 - 30 - 15 = $5 more.\n#### 5",
-    ),
+"Question:",
+"A store sold 30 apples on Monday and twice as many on Tuesday. If 10 apples were returned, how many apples were sold in total?",
+"Answer:",
+"Tuesday sales = 30 * 2 = 60",
+"andTotal before returns = 30 + 60 = 90",
+"After returns = 90 - 10 = 80",
+"#### 80",
+    )
 ]
 
 # ============================================================================
@@ -265,12 +263,12 @@ class Agent:
             )
 
         # Step 4: Decode only the generated part (skip prompt).
-        prompt_len = inputs["input_ids"].shape[1]
+        input_len = inputs["attention_mask"][i].sum()
         solutions = []
         traces = []
 
         for i in range(output_ids.shape[0]):
-            generated_ids = output_ids[i, prompt_len:]
+            generated_ids = output_ids[i, input_len:]
             output = self.tokenizer.decode(
                 generated_ids,
                 skip_special_tokens=True,
