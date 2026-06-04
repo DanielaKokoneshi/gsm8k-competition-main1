@@ -25,7 +25,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 # ============================================================================
 
 MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
-MAX_NEW_TOKENS = 384
+MAX_NEW_TOKENS = 96
 
 SYSTEM_PROMPT = """You are an expert at grade-school math word problems.
 
