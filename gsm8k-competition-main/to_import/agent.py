@@ -25,32 +25,38 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 # ============================================================================
 
 MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
-MAX_NEW_TOKENS = 384
+MAX_NEW_TOKENS = 128
 
-SYSTEM_PROMPT = """You are an expert at grade-school math word problems.
+SYSTEM_PROMPT = """You are an expert math problem solver.
 
-Solve each problem by:
-1. Breaking down what you know and what you need to find
-2. Writing clear arithmetic steps with expressions (e.g., 48/2 = 24)
-3. Double-checking your calculation
-4. Ending with exactly one line: #### <final integer answer>
+Solve carefully using short arithmetic steps.
 
-Do not add any text after the #### line."""
+Verify calculations before answering.
+
+The final line MUST be:
+
+#### <final integer answer>
+
+where answer is only the final number.
+
+Do not write anything after the #### line."""
 
 # Enhanced 3-shot examples with more varied problem types
 FEW_SHOT = [
-    (
-        "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?",
-        "In April, Natalia sold 48 clips.\nIn May, she sold half: 48/2 = 24 clips.\nTotal: 48 + 24 = 72 clips.\n#### 72",
-    ),
-    (
-        "Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn?",
-        "Weng earns $12 per 60 minutes = 12/60 = $0.2 per minute.\nFor 50 minutes: 0.2 * 50 = $10.\n#### 10",
-    ),
-    (
-        "Betty is saving money for a new wallet which costs $100. Betty has only half of the money she needs. Her parents decided to give her $15 for that purpose, and her grandparents twice as much as her parents. How much more money does Betty need to buy the wallet?",
-        "Betty has: 100/2 = $50.\nParents give: $15.\nGrandparents give: 15 * 2 = $30.\nTotal she has: 50 + 15 + 30 = $95.\nShe still needs: 100 - 95 = $5.\n#### 5",
-    ),
+(
+"A shirt costs $80. During a sale it is discounted by 25%. What is the sale price?",
+"80 * 25 / 100 = 20\n80 - 20 = 60\n#### 60"
+),
+
+(
+"A farmer has 24 chickens. Each chicken lays 2 eggs per day. The farmer collects eggs for 5 days and sells 30 eggs. How many eggs does he have left?",
+"24 * 2 = 48\n48 * 5 = 240\n240 - 30 = 210\n#### 210"
+),
+
+(
+"Betty is saving money for a new wallet which costs $100. Betty has only half of the money she needs. Her parents decided to give her $15 for that purpose, and her grandparents twice as much as her parents. How much more money does Betty need to buy the wallet?",
+"100 / 2 = 50\n15 * 2 = 30\n50 + 15 + 30 = 95\n100 - 95 = 5\n#### 5"
+),
 ]
 
 # ============================================================================
@@ -272,52 +278,70 @@ class Agent:
 
         # Step 3: Generate with greedy decoding first (fast, deterministic).
         with torch.no_grad():
-            output_ids = self.model.generate(
-                **inputs,
+
+            greedy_ids = self.model.generate(
+                 **inputs,
                 max_new_tokens=MAX_NEW_TOKENS,
                 do_sample=False,
-                temperature=None,
-                top_p=None,
                 repetition_penalty=1.05,
                 pad_token_id=self.tokenizer.eos_token_id,
             )
 
-        # Step 4: Decode and extract answers (greedy pass).
-        prompt_len = inputs["input_ids"].shape[1]
+            sample_ids = self.model.generate(
+                 **inputs,
+                 max_new_tokens=MAX_NEW_TOKENS,
+                 do_sample=True,
+                 temperature=0.4,
+                 top_p=0.9,
+                 repetition_penalty=1.05,
+                 pad_token_id=self.tokenizer.eos_token_id,
+            )
+
+        # Step 4: Decode and extract answers
         solutions = []
         traces = []
 
-        for i in range(output_ids.shape[0]):
-            generated_ids = output_ids[i, prompt_len:]
-            output = self.tokenizer.decode(
-                generated_ids,
-                skip_special_tokens=True,
+        for i in range(len(questions)):
+
+            input_len = int(inputs["attention_mask"][i].sum())
+
+            greedy_text = self.tokenizer.decode(
+                  greedy_ids[i, input_len:],
+                  skip_special_tokens=True,
             )
-            traces.append(output)
-            parsed_ans = _parse_final_number(output)
-            
-            # If greedy extraction failed (NaN), try one temperature-sampled generation
-            if parsed_ans != parsed_ans:  # NaN check
-                with torch.no_grad():
-                    retry_ids = self.model.generate(
-                        input_ids=inputs["input_ids"][i:i+1],
-                        attention_mask=inputs["attention_mask"][i:i+1],
-                        max_new_tokens=MAX_NEW_TOKENS,
-                        do_sample=True,
-                        temperature=0.7,
-                        top_p=0.95,
-                        repetition_penalty=1.05,
-                        pad_token_id=self.tokenizer.eos_token_id,
-                    )
-                retry_output = self.tokenizer.decode(
-                    retry_ids[0, prompt_len:],
-                    skip_special_tokens=True,
-                )
-                parsed_ans = _parse_final_number(retry_output)
-                # Update trace with retry if it was successful
-                if parsed_ans == parsed_ans:  # Valid (not NaN)
-                    traces[-1] = retry_output
-            
-            solutions.append(parsed_ans)
+
+            sample_text = self.tokenizer.decode(
+                 sample_ids[i, input_len:],
+                 skip_special_tokens=True,
+            )
+
+            greedy_ans = _parse_final_number(greedy_text)
+            sample_ans = _parse_final_number(sample_text)
+
+            # Agreement -> trust it
+            if (
+                greedy_ans == greedy_ans
+                and sample_ans == sample_ans
+                and abs(greedy_ans - sample_ans) < 1e-6
+            ):
+                final_ans = greedy_ans
+                final_trace = greedy_text
+
+            # Disagreement -> trust greedy
+            elif greedy_ans == greedy_ans:
+                 final_ans = greedy_ans
+                 final_trace = greedy_text
+
+            # Greedy failed -> use sample
+            elif sample_ans == sample_ans:
+                 final_ans = sample_ans
+                 final_trace = sample_text
+
+            else:
+                final_ans = float("nan")
+                final_trace = greedy_text
+
+            solutions.append(final_ans)
+            traces.append(final_trace)
 
         return solutions, traces
