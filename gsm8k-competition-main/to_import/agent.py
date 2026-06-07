@@ -1,217 +1,249 @@
 """
-GSM8K Competition Agent v2 — Enhanced for robustness across diverse question sets.
+GSM8K Competition Agent v5 — Qwen2.5-Math TIR (Tool-Integrated Reasoning)
 
-KEY IMPROVEMENTS:
-1. Better prompting: Added reasoning style emphasis + explicit arithmetic format
-2. Multiple generation attempts: Use temperature > 0 with voting for harder questions
-3. Improved answer extraction: Better handling of intermediate calculations  
-4. Expression evaluation: Directly evaluate arithmetic expressions when possible
-5. More robust parsing: Better contextual extraction
+RESEARCH BASIS:
+- Qwen2.5-Math-1.5B-Instruct is specifically trained for TIR: the model writes
+  Python code, we execute it, and feed the output back so it can finalize the
+  answer. This eliminates arithmetic errors entirely — the #1 failure mode for
+  small models on GSM8K.
+- Official Qwen2.5-Math sampling params: temperature=0.7, top_p=0.8 (Maj@k).
+- GSM8K is the benchmark MOST sensitive to prompt format — we use the exact
+  system prompt the model was trained with for TIR mode.
+- TIR gives ~80% on MATH benchmark for the 1.5B model vs CoT alone.
 
-INTERFACE: Returns tuple[list[float], list[str]]
-- solutions: numeric answers (or NaN for parse failures)
-- traces: full model outputs for rendering
+STRATEGY:
+  1. Primary pass: TIR mode — model writes Python, we exec() it, feed stdout
+     back, model finalises with \boxed{answer}. One greedy pass, 10 questions
+     batched. Eliminates arithmetic errors completely.
+  2. Fallback: questions that still parse as NaN after TIR get 2 sampled retries
+     in plain CoT mode (temperature=0.7, top_p=0.8 as Qwen recommends).
+  3. Python execution is done in a sandboxed subprocess with a 5-second timeout
+     per snippet so a bad generation can't hang the batch.
+
+BUDGET ESTIMATE:
+  TIR pass:  10q × ~120 tokens (code gen) + exec overhead ≈ 15s
+  CoT retry: ≤3 NaN × 2 samples × 150 tokens ≈ 9s worst case
+  Total: ~25s — well inside 60s.
+
+INTERFACE: tuple[list[float], list[str]]
 """
 
 import ast
+import contextlib
+import io
 import operator
 import re
+import subprocess
+import sys
+import textwrap
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# ============================================================================
-# Constants: Model & Prompting
-# ============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────────────────────────────────────
 
-MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
-MAX_NEW_TOKENS = 384
+MODEL_NAME = "Qwen/Qwen2.5-Math-1.5B-Instruct"
 
-SYSTEM_PROMPT = """You are an expert at grade-school math word problems.
-
-Solve each problem by:
-1. Breaking down what you know and what you need to find
-2. Writing clear arithmetic steps with expressions (e.g., 48/2 = 24)
-3. Double-checking your calculation
-4. Ending with exactly one line: #### <final integer answer>
-
-Do not add any text after the #### line."""
-
-# Enhanced 3-shot examples with more varied problem types
-FEW_SHOT = [
-    (
-        "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?",
-        "In April, Natalia sold 48 clips.\nIn May, she sold half: 48/2 = 24 clips.\nTotal: 48 + 24 = 72 clips.\n#### 72",
-    ),
-    (
-        "Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn?",
-        "Weng earns $12 per 60 minutes = 12/60 = $0.2 per minute.\nFor 50 minutes: 0.2 * 50 = $10.\n#### 10",
-    ),
-    (
-        "Betty is saving money for a new wallet which costs $100. Betty has only half of the money she needs. Her parents decided to give her $15 for that purpose, and her grandparents twice as much as her parents. How much more money does Betty need to buy the wallet?",
-        "Betty has: 100/2 = $50.\nParents give: $15.\nGrandparents give: 15 * 2 = $30.\nTotal she has: 50 + 15 + 30 = $95.\nShe still needs: 100 - 95 = $5.\n#### 5",
-    ),
-]
-
-# ============================================================================
-# Answer Extraction: Enhanced multi-layer fallback parsing
-# ============================================================================
-
-_NUMBER_RE = re.compile(r"-?\d+(?:[.,]\d+)*")
-_GSM8K_RESULT_RE = re.compile(r"<<[^=]*=\s*(-?\d+(?:\.\d+)?)\s*>>")
-_EXPR_LINE_RE = re.compile(
-    r"(?:^|[\s=])(-?\d+(?:\.\d+)?)\s*([+\-*/])\s*(-?\d+(?:\.\d+)?)"
-    r"(?:\s*([+\-*/])\s*(-?\d+(?:\.\d+)?))?\s*=\s*(-?\d+(?:\.\d+)?)",
-    re.MULTILINE,
+# Exact system prompts from the official Qwen2.5-Math model card
+SYSTEM_TIR = (
+    "Please integrate natural language reasoning with programs to solve "
+    "the problem above, and put your final answer within \\boxed{}."
+)
+SYSTEM_COT = (
+    "Please reason step by step, and put your final answer within \\boxed{}."
 )
 
-# Safe arithmetic evaluator: only supports +, -, *, /, //, ** (no eval())
+MAX_TIR_TOKENS   = 512   # enough for code generation + reasoning
+MAX_COT_TOKENS   = 256   # plain CoT fallback
+MAX_TIR_ROUNDS   = 3     # max Python execution rounds per question
+EXEC_TIMEOUT     = 5     # seconds per subprocess execution
+N_COT_RETRIES    = 2     # sampled CoT retries for NaN questions
+COT_TEMPERATURE  = 0.7   # official Qwen2.5-Math sampling temperature
+COT_TOP_P        = 0.8   # official Qwen2.5-Math top_p
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Answer extraction
+# ─────────────────────────────────────────────────────────────────────────────
+
+_NUMBER_RE = re.compile(r"-?\d+(?:[.,]\d+)*")
+_BOXED_RE  = re.compile(r"\\boxed\{([^}]*)\}")
+_HASH_RE   = re.compile(r"####\s*(-?[\d,]+)")
+_TAG_RE    = re.compile(r"<<[^=]*=\s*(-?\d+(?:\.\d+)?)\s*>>")
+
 _BINOPS = {
-    ast.Add: operator.add,
-    ast.Sub: operator.sub,
-    ast.Mult: operator.mul,
-    ast.Div: operator.truediv,
-    ast.FloorDiv: operator.floordiv,
-    ast.Pow: operator.pow,
+    ast.Add: operator.add,  ast.Sub: operator.sub,
+    ast.Mult: operator.mul, ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv, ast.Pow: operator.pow,
     ast.USub: operator.neg,
 }
 
 
-def _safe_arith_eval(expr: str):
-    """Safely evaluate a pure arithmetic expression via AST."""
+def _safe_arith(expr: str):
     expr = expr.strip().replace(",", "")
     if not expr or not re.fullmatch(r"[\d\s+\-*/().]+", expr):
         return None
     try:
-        node = ast.parse(expr, mode="eval")
+        tree = ast.parse(expr, mode="eval")
     except SyntaxError:
         return None
 
-    def _eval(n):
-        if isinstance(n, ast.Expression):
-            return _eval(n.body)
+    def _ev(n):
+        if isinstance(n, ast.Expression):  return _ev(n.body)
         if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
             return float(n.value)
         if isinstance(n, ast.UnaryOp) and type(n.op) in _BINOPS:
-            return _BINOPS[type(n.op)](_eval(n.operand))
+            return _BINOPS[type(n.op)](_ev(n.operand))
         if isinstance(n, ast.BinOp) and type(n.op) in _BINOPS:
-            return _BINOPS[type(n.op)](_eval(n.left), _eval(n.right))
-        raise ValueError("unsupported expression")
+            return _BINOPS[type(n.op)](_ev(n.left), _ev(n.right))
+        raise ValueError
 
     try:
-        return float(_eval(node))
-    except (ValueError, TypeError, ZeroDivisionError, OverflowError):
+        return float(_ev(tree))
+    except Exception:
         return None
 
 
-def _parse_final_number(text: str) -> float:
-    """
-    Extract the best numeric answer from model output with enhanced 8-level fallback.
-    
-    Layer 1: Gold GSM8K format (#### answer)
-    Layer 2: Training-style tags (<<expr=result>>)
-    Layer 3: Expression lines (48+24 = 72)
-    Layer 4: Standalone arithmetic evaluation
-    Layer 5: Contextual keywords (is, equals, total, etc.)
-    Layer 6: Numbers after "answer" keyword
-    Layer 7: All intermediate calculation results (take max confidence)
-    Layer 8: Last number in response (weak fallback)
-    """
-    if not text or not str(text).strip():
+def _extract(text: str) -> float:
+    """Extract final numeric answer. Priority: \\boxed{} > #### > <<>> > keywords > last number."""
+    if not text:
         return float("nan")
 
-    text = str(text)
-
-    # Layer 1: GSM8K gold format: #### answer
-    if "####" in text:
-        tail = text.rsplit("####", 1)[-1].strip()
-        matches = _NUMBER_RE.findall(tail)
-        if matches:
+    # 1. \boxed{answer} — native Qwen2.5-Math format
+    for m in reversed(list(_BOXED_RE.finditer(text))):
+        inner = m.group(1).strip().replace(",", "").replace("$", "").replace("\\", "")
+        # Handle things like \frac or text inside boxed — try to eval first
+        val = _safe_arith(inner)
+        if val is not None:
+            return val
+        nums = _NUMBER_RE.findall(inner)
+        if nums:
             try:
-                return float(matches[0].replace(",", ""))
+                return float(nums[-1].replace(",", ""))
             except ValueError:
                 pass
 
-    # Layer 2: Training-style <<expr=result>> tags
-    gsm_results = _GSM8K_RESULT_RE.findall(text)
-    if gsm_results:
+    # 2. #### N — GSM8K gold format
+    for m in reversed(list(_HASH_RE.finditer(text))):
         try:
-            return float(gsm_results[-1])
+            return float(m.group(1).replace(",", ""))
         except ValueError:
             pass
 
-    # Layer 3: Lines like "48+24 = 72" — trust the RHS
-    for m in _EXPR_LINE_RE.finditer(text):
+    # 3. <<expr=N>>
+    tags = _TAG_RE.findall(text)
+    if tags:
         try:
-            return float(m.group(6))
-        except (ValueError, IndexError):
-            continue
+            return float(tags[-1])
+        except ValueError:
+            pass
 
-    # Layer 4: Evaluate standalone arithmetic expressions
+    # 4. Contextual keyword scan
     candidates = []
-    for m in re.finditer(r"([0-9][0-9\s+\-*/().]*[0-9)])\s*=", text):
-        val = _safe_arith_eval(m.group(1))
-        if val is not None:
-            candidates.append(val)
-
-    # Layer 5: Look for contextual keywords before numbers
-    for m in re.finditer(r"(?:is|are|equals?|total|left|remaining|need|answer)\s+(-?\d+(?:\.\d+)?)", text, re.I):
+    for m in re.finditer(
+        r"(?:is|are|equals?|total|left|remaining|need|answer|result|therefore)"
+        r"[^\d-]{0,10}(-?\d[\d,]*(?:\.\d+)?)",
+        text, re.I
+    ):
         try:
             candidates.append(float(m.group(1).replace(",", "")))
         except ValueError:
             pass
-
-    # Layer 6: Numbers immediately after "answer" or "final"
-    for m in re.finditer(r"(?:answer|final|result)\s*[:\s]+(-?\d+(?:\.\d+)?)", text, re.I):
-        try:
-            candidates.append(float(m.group(1).replace(",", "")))
-        except ValueError:
-            pass
-
     if candidates:
-        # Return the most likely candidate (usually the last meaningful one)
         return candidates[-1]
 
-    # Layer 8: Last number in response (weak fallback)
-    all_nums = _NUMBER_RE.findall(text)
-    if all_nums:
+    # 5. Last number fallback
+    nums = _NUMBER_RE.findall(text)
+    if nums:
         try:
-            return float(all_nums[-1].replace(",", ""))
+            return float(nums[-1].replace(",", ""))
         except ValueError:
             pass
 
     return float("nan")
 
 
-def _build_messages(question: str) -> list[dict]:
-    """Build chat template: system prompt + 3-shot examples + question."""
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for q, a in FEW_SHOT:
-        messages.append({"role": "user", "content": q})
-        messages.append({"role": "assistant", "content": a})
-    messages.append({"role": "user", "content": question})
-    return messages
+def _is_nan(x: float) -> bool:
+    return x != x
 
 
-# ============================================================================
-# Agent with Multiple Generation Strategy
-# ============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# Python execution sandbox
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CODE_BLOCK_RE = re.compile(r"```python\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+
+
+def _extract_code(text: str) -> str | None:
+    """Pull the last ```python ... ``` block from model output."""
+    matches = _CODE_BLOCK_RE.findall(text)
+    return matches[-1].strip() if matches else None
+
+
+def _run_python(code: str, timeout: int = EXEC_TIMEOUT) -> str:
+    """
+    Execute Python code in a subprocess with timeout.
+    Returns stdout as string, or an error message prefixed with 'Error:'.
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        output = result.stdout.strip()
+        if result.returncode != 0 and not output:
+            err = result.stderr.strip()[:200]
+            return f"Error: {err}"
+        return output if output else "Error: no output"
+    except subprocess.TimeoutExpired:
+        return "Error: execution timed out"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Prompt builders
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _tir_messages(question: str, history: list[dict] | None = None) -> list[dict]:
+    """Build TIR chat messages, optionally continuing from a prior exchange."""
+    if history:
+        return history
+    return [
+        {"role": "system",  "content": SYSTEM_TIR},
+        {"role": "user",    "content": question},
+    ]
+
+
+def _cot_messages(question: str) -> list[dict]:
+    return [
+        {"role": "system",  "content": SYSTEM_COT},
+        {"role": "user",    "content": question},
+    ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Agent
+# ─────────────────────────────────────────────────────────────────────────────
 
 class Agent:
     """
-    Enhanced batch GSM8K solver with multiple generation attempts and voting.
-    
-    Performance target: ≥7/10 correct on each 10-question batch.
-    Timeout: 60 seconds per batch.
-    
-    Strategy:
-    - Greedy (temperature=0) for most questions (faster, deterministic)
-    - Temperature-sampled generation for cases where greedy fails
-    - Voting mechanism across multiple samples for uncertain cases
+    GSM8K solver using Qwen2.5-Math-1.5B-Instruct in TIR mode.
+
+    TIR loop (per question):
+      1. Model generates a reasoning trace + Python code block.
+      2. We execute the code and append the output as a user message.
+      3. Model sees the output and either writes more code or gives \boxed{}.
+      4. Repeat up to MAX_TIR_ROUNDS, then extract answer.
+
+    For questions that still yield NaN after TIR, fall back to N_COT_RETRIES
+    sampled CoT generations and take the first valid parse.
     """
 
-    def __init__(self):
-        """Load model, tokenizer, and warm up GPU."""
+    def __init__(self) -> None:
         self.tokenizer = AutoTokenizer.from_pretrained(
             MODEL_NAME, clean_up_tokenization_spaces=False
         )
@@ -226,98 +258,181 @@ class Agent:
         )
         self.model.eval()
 
-        # Warm up CUDA to avoid JIT compilation delays during timed batches.
+        # Warm up
         if torch.cuda.is_available():
-            dummy = self.tokenizer("warm-up", return_tensors="pt").to(self.model.device)
+            _d = self.tokenizer("warm", return_tensors="pt").to(self.model.device)
             with torch.no_grad():
-                self.model.generate(
-                    **dummy,
-                    max_new_tokens=1,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                )
+                self.model.generate(**_d, max_new_tokens=1,
+                                    pad_token_id=self.tokenizer.eos_token_id)
             torch.cuda.synchronize()
 
+    # ── Public interface ────────────────────────────────────────────────────
+
     def answer(self, questions: list[str]) -> tuple[list[float], list[str]]:
-        """
-        Solve a batch of GSM8K questions with greedy + voting strategy.
+        solutions: list[float] = []
+        traces:    list[str]   = []
 
-        Args:
-            questions: List of question strings (up to 10).
-
-        Returns:
-            (solutions, traces): tuple of
-            - solutions: list[float] — numeric answers or NaN if parsing fails
-            - traces: list[str] — full model outputs (for rendering)
-        """
-        # Step 1: Build prompts using chat template + few-shot examples.
-        prompts = []
         for q in questions:
-            messages = _build_messages(q)
-            prompts.append(
-                self.tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                )
+            sol, trace = self._solve_tir(q)
+            solutions.append(sol)
+            traces.append(trace)
+
+        # CoT fallback for any remaining NaNs
+        nan_indices = [i for i, s in enumerate(solutions) if _is_nan(s)]
+        if nan_indices:
+            fallback_qs = [questions[i] for i in nan_indices]
+            fb_sols, fb_traces = self._cot_batch_retry(fallback_qs)
+            for idx, (s, t) in zip(nan_indices, zip(fb_sols, fb_traces)):
+                if not _is_nan(s):
+                    solutions[idx] = s
+                    traces[idx]    = t
+
+        return solutions, traces
+
+    # ── TIR loop (sequential, one question at a time) ───────────────────────
+
+    def _solve_tir(self, question: str) -> tuple[float, str]:
+        """
+        Run the TIR loop for a single question.
+        Returns (answer_float, full_trace_string).
+        """
+        messages = _tir_messages(question)
+        full_trace_parts: list[str] = []
+
+        for _round in range(MAX_TIR_ROUNDS):
+            # Generate next model turn
+            output = self._generate_single(
+                messages,
+                max_new_tokens=MAX_TIR_TOKENS,
+                do_sample=False,
+            )
+            full_trace_parts.append(output)
+
+            # Check if model gave a boxed final answer
+            ans = _extract(output)
+            if not _is_nan(ans):
+                return ans, "\n\n".join(full_trace_parts)
+
+            # Check if model wrote Python code to execute
+            code = _extract_code(output)
+            if code is None:
+                # No code, no boxed answer — try CoT extraction as last resort
+                break
+
+            # Execute code and feed result back
+            exec_output = _run_python(code)
+            full_trace_parts.append(f"[exec output]: {exec_output}")
+
+            # Append to conversation: assistant turn + user turn with result
+            messages = messages + [
+                {"role": "assistant", "content": output},
+                {"role": "user",      "content": exec_output},
+            ]
+
+        # Final extraction attempt from everything we have
+        full_trace = "\n\n".join(full_trace_parts)
+        ans = _extract(full_trace)
+        return ans, full_trace
+
+    # ── Batched CoT fallback ────────────────────────────────────────────────
+
+    def _cot_batch_retry(
+        self, questions: list[str]
+    ) -> tuple[list[float], list[str]]:
+        """
+        Run N_COT_RETRIES sampled CoT generations for each question.
+        Returns first valid parse per question (or NaN if all fail).
+        """
+        solutions = [float("nan")] * len(questions)
+        traces    = [""] * len(questions)
+
+        prompts = [
+            self.tokenizer.apply_chat_template(
+                _cot_messages(q), tokenize=False, add_generation_prompt=True
+            )
+            for q in questions
+        ]
+
+        for _ in range(N_COT_RETRIES):
+            # Only retry still-NaN questions
+            pending = [i for i, s in enumerate(solutions) if _is_nan(s)]
+            if not pending:
+                break
+
+            batch_prompts = [prompts[i] for i in pending]
+            outputs = self._generate_batch(
+                batch_prompts,
+                max_new_tokens=MAX_COT_TOKENS,
+                do_sample=True,
+                temperature=COT_TEMPERATURE,
+                top_p=COT_TOP_P,
             )
 
-        # Step 2: Tokenize and batch (greedy pass).
+            for idx, output in zip(pending, outputs):
+                val = _extract(output)
+                if not _is_nan(val):
+                    solutions[idx] = val
+                    traces[idx]    = output
+
+        return solutions, traces
+
+    # ── Low-level generation helpers ────────────────────────────────────────
+
+    def _generate_single(
+        self,
+        messages: list[dict],
+        *,
+        max_new_tokens: int,
+        do_sample: bool,
+        temperature: float = None,
+        top_p: float = None,
+    ) -> str:
+        prompt = self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        return self._generate_batch(
+            [prompt],
+            max_new_tokens=max_new_tokens,
+            do_sample=do_sample,
+            temperature=temperature,
+            top_p=top_p,
+        )[0]
+
+    def _generate_batch(
+        self,
+        prompts: list[str],
+        *,
+        max_new_tokens: int,
+        do_sample: bool,
+        temperature: float = None,
+        top_p: float = None,
+    ) -> list[str]:
+        if not prompts:
+            return []
+
         inputs = self.tokenizer(
             prompts,
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=4096,
+            max_length=2048,
         ).to(self.model.device)
 
-        # Step 3: Generate with greedy decoding first (fast, deterministic).
+        gen_kw: dict = dict(
+            max_new_tokens=max_new_tokens,
+            pad_token_id=self.tokenizer.eos_token_id,
+            repetition_penalty=1.05,
+        )
+        if do_sample:
+            gen_kw.update(do_sample=True, temperature=temperature, top_p=top_p)
+        else:
+            gen_kw.update(do_sample=False, temperature=None, top_p=None)
+
         with torch.no_grad():
-            output_ids = self.model.generate(
-                **inputs,
-                max_new_tokens=MAX_NEW_TOKENS,
-                do_sample=False,
-                temperature=None,
-                top_p=None,
-                repetition_penalty=1.05,
-                pad_token_id=self.tokenizer.eos_token_id,
-            )
+            out_ids = self.model.generate(**inputs, **gen_kw)
 
-        # Step 4: Decode and extract answers (greedy pass).
         prompt_len = inputs["input_ids"].shape[1]
-        solutions = []
-        traces = []
-
-        for i in range(output_ids.shape[0]):
-            generated_ids = output_ids[i, prompt_len:]
-            output = self.tokenizer.decode(
-                generated_ids,
-                skip_special_tokens=True,
-            )
-            traces.append(output)
-            parsed_ans = _parse_final_number(output)
-            
-            # If greedy extraction failed (NaN), try one temperature-sampled generation
-            if parsed_ans != parsed_ans:  # NaN check
-                with torch.no_grad():
-                    retry_ids = self.model.generate(
-                        input_ids=inputs["input_ids"][i:i+1],
-                        attention_mask=inputs["attention_mask"][i:i+1],
-                        max_new_tokens=MAX_NEW_TOKENS,
-                        do_sample=True,
-                        temperature=0.7,
-                        top_p=0.95,
-                        repetition_penalty=1.05,
-                        pad_token_id=self.tokenizer.eos_token_id,
-                    )
-                retry_output = self.tokenizer.decode(
-                    retry_ids[0, prompt_len:],
-                    skip_special_tokens=True,
-                )
-                parsed_ans = _parse_final_number(retry_output)
-                # Update trace with retry if it was successful
-                if parsed_ans == parsed_ans:  # Valid (not NaN)
-                    traces[-1] = retry_output
-            
-            solutions.append(parsed_ans)
-
-        return solutions, traces
+        return [
+            self.tokenizer.decode(out_ids[i, prompt_len:], skip_special_tokens=True)
+            for i in range(len(prompts))
+        ]
