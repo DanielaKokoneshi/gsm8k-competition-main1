@@ -1,26 +1,36 @@
 """
-GSM8K Competition Agent — single greedy pass, fits 60s batch timeout on T4.
+GSM8K Competition Agent — target ≥7/10 on ML Arena private set.
 
-Strategy: one batched greedy generation (proven fast on Colab T4) plus
-GSM8K-native few-shot prompting and robust answer extraction.
+Incremental improvements over the Colab 7/10 baseline:
+- Few-shot covers 3 hard patterns: basic ops, fraction/savings, max-miss threshold
+- Calculator-verified <<expr=result>> extraction (fixes wrong #### lines)
+- Single greedy pass on slow GPUs (Colab T4); optional 2nd pass on fast GPUs only
 """
 
 import ast
 import operator
 import re
+import time
+from collections import Counter
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
-MAX_NEW_TOKENS = 224
+MAX_NEW_TOKENS = 256
+SAMPLE_TEMPERATURE = 0.7
 
-SYSTEM_PROMPT = (
-    "You are an expert at grade-school math word problems. "
-    "Solve step by step using <<expression=result>> tags for each calculation. "
-    "End with exactly one line: #### <final numeric answer>"
-)
+# If greedy pass finishes faster than this, run one sampled pass (ML Arena GPUs).
+FAST_GPU_THRESHOLD_SEC = 22.0
+BATCH_BUDGET_SEC = 55.0
 
+SYSTEM_PROMPT = """You are an expert at grade-school math word problems.
+Solve step by step. Write each calculation as <<expression=result>> (e.g. <<48/2=24>>24).
+For "how much more still needed": subtract any savings from what remains owed.
+For percent increases: new value = original + original * percent / 100.
+End with exactly one line: #### <final numeric answer>"""
+
+# Three shots aligned with common hard patterns in the competition set.
 FEW_SHOT = [
     (
         "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?",
@@ -28,24 +38,30 @@ FEW_SHOT = [
         "Natalia sold 48+24 = <<48+24=72>>72 clips altogether.\n#### 72",
     ),
     (
-        "Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn?",
-        "Weng earns 12/60 = <<12/60=0.2>>0.2 dollars per minute.\n"
-        "She earned 0.2*50 = <<0.2*50=10>>10 dollars.\n#### 10",
-    ),
-    (
         "Anaya wants to buy a telescope that costs 540 dollars. Her grandfather offers to pay two-fifths of the cost. She has 11 dollars saved toward the rest. How much more money does Anaya still need?",
         "Grandfather pays 540*2/5 = <<540*2/5=216>>216 dollars.\n"
         "Remaining: 540-216 = <<540-216=324>>324 dollars.\n"
         "Still needed: 324-11 = <<324-11=313>>313 dollars.\n#### 313",
     ),
+    (
+        "Eldar signs up for 400 art workshops for a total of 476 dollars. His scholarship is revoked if the cost per attended workshop rises above 4 dollars. What is the maximum number of workshops Eldar can miss before his scholarship is revoked?",
+        "Minimum attended for $4 each: 476/4 = <<476/4=119>>119 workshops.\n"
+        "Maximum misses: 400-119 = <<400-119=281>>281 workshops.\n#### 281",
+    ),
 ]
 
 _NUMBER_RE = re.compile(r"-?\d+(?:[.,]\d+)*")
+_GSM8K_TAG_RE = re.compile(r"<<([^=]+)=([^>]*)>>")
 _GSM8K_RESULT_RE = re.compile(r"<<[^=]*=\s*(-?\d+(?:\.\d+)?)\s*>>")
 _EXPR_LINE_RE = re.compile(
     r"(?:^|[\s=])(-?\d+(?:\.\d+)?)\s*([+\-*/])\s*(-?\d+(?:\.\d+)?)"
     r"(?:\s*([+\-*/])\s*(-?\d+(?:\.\d+)?))?\s*=\s*(-?\d+(?:\.\d+)?)",
     re.MULTILINE,
+)
+_BOXED_RE = re.compile(r"\\boxed\{([^}]+)\}")
+_ANSWER_IS_RE = re.compile(
+    r"(?:the\s+)?(?:final\s+)?answer\s+is[:\s]*\$?(-?\d+(?:\.\d+)?)",
+    re.I,
 )
 
 _BINOPS = {
@@ -85,11 +101,29 @@ def _safe_arith_eval(expr: str):
         return None
 
 
+def _verified_tag_values(text: str) -> list[float]:
+    """Re-evaluate each <<expr=result>> tag; trust Python math over the model."""
+    values = []
+    for m in _GSM8K_TAG_RE.finditer(text):
+        expr = m.group(1).strip()
+        stated = m.group(2).strip()
+        computed = _safe_arith_eval(expr)
+        if computed is not None:
+            values.append(computed)
+            continue
+        try:
+            values.append(float(stated.replace(",", "")))
+        except ValueError:
+            pass
+    return values
+
+
 def _parse_final_number(text: str) -> float:
     if not text or not str(text).strip():
         return float("nan")
 
     text = str(text)
+    verified = _verified_tag_values(text)
 
     hash_answer = None
     if "####" in text:
@@ -101,23 +135,42 @@ def _parse_final_number(text: str) -> float:
             except ValueError:
                 pass
 
+    if hash_answer is not None and verified:
+        last_verified = verified[-1]
+        if abs(hash_answer - last_verified) > 1e-3:
+            if any(abs(hash_answer - v) < 1e-3 for v in verified[:-1]):
+                return last_verified
+            if abs(hash_answer - last_verified) / max(abs(last_verified), 1.0) > 0.01:
+                return last_verified
+        return hash_answer
+
+    if hash_answer is not None:
+        return hash_answer
+
+    if verified:
+        return verified[-1]
+
     gsm_results = _GSM8K_RESULT_RE.findall(text)
-    tag_answer = None
     if gsm_results:
         try:
-            tag_answer = float(gsm_results[-1])
+            return float(gsm_results[-1])
         except ValueError:
             pass
 
-    if hash_answer is not None:
-        if tag_answer is not None and abs(hash_answer - tag_answer) > 1e-3:
-            intermediates = [float(t) for t in gsm_results[:-1]]
-            if any(abs(hash_answer - x) < 1e-3 for x in intermediates):
-                return tag_answer
-        return hash_answer
+    for m in _BOXED_RE.finditer(text):
+        nums = _NUMBER_RE.findall(m.group(1))
+        if nums:
+            try:
+                return float(nums[-1].replace(",", ""))
+            except ValueError:
+                pass
 
-    if tag_answer is not None:
-        return tag_answer
+    answer_matches = _ANSWER_IS_RE.findall(text)
+    if answer_matches:
+        try:
+            return float(answer_matches[-1].replace(",", ""))
+        except ValueError:
+            pass
 
     for m in _EXPR_LINE_RE.finditer(text):
         try:
@@ -132,7 +185,7 @@ def _parse_final_number(text: str) -> float:
             candidates.append(val)
 
     for m in re.finditer(
-        r"(?:is|are|equals?|total|left|remaining|need|answer)\s+(-?\d+(?:\.\d+)?)",
+        r"(?:is|are|equals?|total|left|remaining|need)\s+(-?\d+(?:\.\d+)?)",
         text,
         re.I,
     ):
@@ -154,6 +207,17 @@ def _parse_final_number(text: str) -> float:
     return float("nan")
 
 
+def _majority_vote(answers: list[float]) -> float:
+    valid = [a for a in answers if a == a]
+    if not valid:
+        return float("nan")
+    rounded = [round(a, 4) for a in valid]
+    winner, count = Counter(rounded).most_common(1)[0]
+    if count == 1 and len(valid) > 1:
+        return valid[0]
+    return winner
+
+
 def _build_messages(question: str) -> list[dict]:
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for q, a in FEW_SHOT:
@@ -172,18 +236,13 @@ class Agent:
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        load_kwargs = {
-            "torch_dtype": torch.bfloat16,
-            "device_map": "auto",
-        }
+        load_kwargs = {"torch_dtype": torch.bfloat16, "device_map": "auto"}
         try:
             self.model = AutoModelForCausalLM.from_pretrained(
                 MODEL_NAME, attn_implementation="sdpa", **load_kwargs
             )
         except (TypeError, ValueError):
-            self.model = AutoModelForCausalLM.from_pretrained(
-                MODEL_NAME, **load_kwargs
-            )
+            self.model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, **load_kwargs)
         self.model.eval()
 
         if torch.cuda.is_available():
@@ -196,7 +255,7 @@ class Agent:
                 )
             torch.cuda.synchronize()
 
-    def answer(self, questions: list[str]) -> tuple[list[float], list[str]]:
+    def _tokenize_batch(self, questions: list[str]):
         prompts = [
             self.tokenizer.apply_chat_template(
                 _build_messages(q),
@@ -205,8 +264,7 @@ class Agent:
             )
             for q in questions
         ]
-
-        inputs = self.tokenizer(
+        return self.tokenizer(
             prompts,
             return_tensors="pt",
             padding=True,
@@ -214,24 +272,56 @@ class Agent:
             max_length=4096,
         ).to(self.model.device)
 
+    def _generate(self, inputs, *, do_sample: bool):
+        kwargs = {
+            "max_new_tokens": MAX_NEW_TOKENS,
+            "pad_token_id": self.tokenizer.eos_token_id,
+            "repetition_penalty": 1.03,
+            "do_sample": do_sample,
+        }
+        if do_sample:
+            kwargs.update(temperature=SAMPLE_TEMPERATURE, top_p=0.95)
         with torch.no_grad():
-            output_ids = self.model.generate(
-                **inputs,
-                max_new_tokens=MAX_NEW_TOKENS,
-                do_sample=False,
-                pad_token_id=self.tokenizer.eos_token_id,
-                repetition_penalty=1.05,
-            )
+            return self.model.generate(**inputs, **kwargs)
 
+    def answer(self, questions: list[str]) -> tuple[list[float], list[str]]:
+        t0 = time.monotonic()
+        inputs = self._tokenize_batch(questions)
         prompt_len = inputs["input_ids"].shape[1]
-        solutions = []
-        traces = []
-        for i in range(output_ids.shape[0]):
-            output = self.tokenizer.decode(
-                output_ids[i, prompt_len:],
-                skip_special_tokens=True,
-            )
-            traces.append(output)
-            solutions.append(_parse_final_number(output))
 
-        return solutions, traces
+        output_ids = self._generate(inputs, do_sample=False)
+        traces = [
+            self.tokenizer.decode(output_ids[i, prompt_len:], skip_special_tokens=True)
+            for i in range(output_ids.shape[0])
+        ]
+        answers = [_parse_final_number(t) for t in traces]
+
+        elapsed = time.monotonic() - t0
+        if (
+            elapsed < FAST_GPU_THRESHOLD_SEC
+            and BATCH_BUDGET_SEC - elapsed >= elapsed + 2.0
+        ):
+            output_ids2 = self._generate(inputs, do_sample=True)
+            traces2 = [
+                self.tokenizer.decode(
+                    output_ids2[i, prompt_len:], skip_special_tokens=True
+                )
+                for i in range(output_ids2.shape[0])
+            ]
+            answers2 = [_parse_final_number(t) for t in traces2]
+
+            solutions = []
+            final_traces = []
+            for i in range(len(questions)):
+                sol = _majority_vote([answers[i], answers2[i]])
+                solutions.append(sol)
+                picked = traces[i]
+                if sol == sol:
+                    for text, ans in ((traces[i], answers[i]), (traces2[i], answers2[i])):
+                        if ans == ans and abs(ans - sol) < 1e-4:
+                            picked = text
+                            break
+                final_traces.append(picked)
+            return solutions, final_traces
+
+        return answers, traces
