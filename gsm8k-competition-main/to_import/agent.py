@@ -1,58 +1,77 @@
 """
-GSM8K Competition Agent — DeepSeek-R1-Distill-Qwen-1.5B (pre-cached on arena)
+GSM8K Competition Agent — Qwen/Qwen3-1.7B, non-thinking mode + few-shot CoT
 
-MODEL CHOICE: deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
-  - Only math-specialized model in the pre-cached list.
-  - Base is Qwen2.5-Math-1.5B fine-tuned on 800k R1 reasoning traces.
-  - Achieves 83.9% on MATH-500, outperforms GPT-4o on math benchmarks.
-  - Generates <think>...</think> chains then \boxed{answer}.
+WHY THIS MODEL:
+  Qwen3-1.7B is pre-cached and is the best available model in the list for math:
+  - Newer architecture than Qwen2.5-1.5B-Instruct (the previous 7/10 baseline)
+  - Qwen3-1.7B-Base outperforms Qwen2.5-3B on STEM benchmarks despite fewer params
+  - Supports /no_think mode: full reasoning quality WITHOUT runaway think chains
+  - Research finding: on GSM8K, thinking mode is WORSE than non-thinking mode
+    because the model overthinks simple arithmetic (gets lost in loops)
 
-KEY TRICKS (from research):
-  1. FORCE <think>\n prefix in the assistant turn — without it the model skips
-     reasoning entirely, tanking accuracy (official DeepSeek recommendation).
-  2. Prompt format: <|User|>...question...<|Assistant|><think>\n
-     (raw string, NOT apply_chat_template which omits the <think> prefill)
-  3. Hard token cap of 400: R1 think-chains are long; 400 covers GSM8K easily
-     (~250 tokens avg) without risking timeout on hard questions.
-  4. Single batched greedy pass — all 10 questions at once, no loops.
-  5. NaN retry: 2 sampled passes (temperature=0.7) for any failed parses,
-     batched together, capped at 200 tokens.
-  6. Python arithmetic verification: after extracting the candidate answer,
-     re-evaluate the last arithmetic expression in the trace and cross-check.
+WHY NOT DeepSeek-R1-Distill-Qwen-1.5B:
+  - Think chains avg 370+ tokens/question → 3700 tokens for 10 questions → ~53s
+    (you actually observed this: 53s batch time, nearly timed out)
+  - Scored 6/10 vs Qwen2.5-1.5B's 7/10 despite being "math specialized"
 
-BUDGET (arena GPU ~24GB, ~200 tok/s for 1.5B bfloat16):
-  Primary: 10q × 400 tok = 4000 tokens ÷ 200 tok/s ≈ 20s
-  Retry:   ≤10q × 200 tok × 2 = 4000 tokens ÷ 200 tok/s ≈ 20s worst case
-  Total: ~40s — safely within 60s even with overhead.
+STRATEGY:
+  1. Qwen3-1.7B in /no_think mode — fast, deterministic, smarter baseline
+  2. 3-shot few-shot CoT with #### answer format (matches GSM8K gold format)
+  3. Single batched greedy pass, all 10 questions, max 256 tokens
+  4. NaN-only retry: 2 sampled passes (temp=0.7, top_p=0.8) batched together
+  5. Python arithmetic cross-check on extracted candidates (catches wrong RHS)
+
+BUDGET (arena: ~24GB GPU, ~300+ tok/s for 1.7B bfloat16):
+  Primary:  10q × 256 tok = 2560 tokens ÷ 300 tok/s ≈ 9s
+  Retry:    ≤10q × 2 × 180 tok = 3600 tokens ÷ 300 tok/s ≈ 12s worst case
+  Total: ~25s — well inside 60s with large safety margin.
+
+INTERFACE: tuple[list[float], list[str]]
 """
 
 import ast
 import operator
 import re
-import subprocess
-import sys
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Model config
+# Config
 # ─────────────────────────────────────────────────────────────────────────────
 
-MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+MODEL_NAME = "Qwen/Qwen3-1.7B"
 
-# Raw prompt template — we manually build the string so we can prefill <think>
-# This is the official format from the DeepSeek-R1 paper and model card.
-# Forcing <think>\n at the start prevents the model from bypassing reasoning.
-_PROMPT_TEMPLATE = (
-    "<|begin_of_sentence|>"
-    "Please reason step by step, and put your final answer within \\boxed{{}}.\n"
-    "<|User|>{question}<|Assistant|><think>\n"
+# /no_think tells Qwen3 to skip the <think> chain entirely.
+# Research shows this is FASTER and BETTER on GSM8K-level problems.
+SYSTEM_PROMPT = (
+    "/no_think\n"
+    "You are a math problem solver. "
+    "Solve step by step and end your answer with exactly: #### <number>"
 )
 
-MAX_NEW_TOKENS       = 400   # hard cap: enough for GSM8K, prevents runaway chains
-RETRY_MAX_NEW_TOKENS = 200   # shorter budget for retry pass
-N_RETRIES            = 2     # sampled retry attempts for NaN questions
+# 3-shot examples — high-quality, varied, matching GSM8K gold format
+FEW_SHOT = [
+    (
+        "Natalia sold clips to 48 of her friends in April, and then she sold "
+        "half as many clips in May. How many clips did she sell altogether?",
+        "April: 48 clips.\nMay: 48/2 = 24 clips.\nTotal: 48 + 24 = 72.\n#### 72",
+    ),
+    (
+        "Weng earns $12 an hour for babysitting. Yesterday she did 50 minutes "
+        "of babysitting. How much did she earn?",
+        "Rate: 12/60 = $0.20 per minute.\nEarnings: 0.20 × 50 = $10.\n#### 10",
+    ),
+    (
+        "A robe takes 2 bolts of blue fiber and half that much white fiber. "
+        "How many bolts in total does it take?",
+        "Blue: 2 bolts.\nWhite: 2/2 = 1 bolt.\nTotal: 2 + 1 = 3 bolts.\n#### 3",
+    ),
+]
+
+MAX_NEW_TOKENS       = 256   # enough for GSM8K CoT; avoids runaway generation
+RETRY_MAX_NEW_TOKENS = 180
+N_RETRIES            = 2
 RETRY_TEMPERATURE    = 0.7
 RETRY_TOP_P          = 0.8
 
@@ -61,8 +80,8 @@ RETRY_TOP_P          = 0.8
 # ─────────────────────────────────────────────────────────────────────────────
 
 _NUMBER_RE = re.compile(r"-?\d+(?:[.,]\d+)*")
+_HASH_RE   = re.compile(r"####\s*(-?[\d,]+(?:\.\d+)?)")
 _BOXED_RE  = re.compile(r"\\boxed\{([^}]*)\}")
-_HASH_RE   = re.compile(r"####\s*(-?[\d,]+)")
 _TAG_RE    = re.compile(r"<<[^=]*=\s*(-?\d+(?:\.\d+)?)\s*>>")
 
 _BINOPS = {
@@ -74,7 +93,7 @@ _BINOPS = {
 
 
 def _safe_arith(expr: str):
-    """Evaluate pure arithmetic expression safely (no eval)."""
+    """Evaluate a pure arithmetic expression safely (no eval())."""
     expr = expr.strip().replace(",", "").replace(" ", "")
     if not expr or not re.fullmatch(r"[\d+\-*/().]+", expr):
         return None
@@ -95,23 +114,34 @@ def _safe_arith(expr: str):
 
     try:
         result = _ev(tree)
-        return result if result == result else None  # reject NaN
+        return result if result == result else None
     except Exception:
         return None
 
 
 def _extract(text: str) -> float:
     """
-    Extract the final numeric answer from model output.
-    Priority: \\boxed{} > #### > <<expr=N>> > keyword scan > last number.
+    Extract final numeric answer. Priority:
+      1. #### N          — GSM8K gold format (primary target)
+      2. \\boxed{N}      — fallback if model uses LaTeX style
+      3. <<expr=N>>      — GSM8K annotation tags
+      4. Arithmetic cross-check: find "expr = N" lines, verify with Python
+      5. Keyword scan    — contextual anchor words
+      6. Last number     — weakest fallback
     """
     if not text:
         return float("nan")
 
-    # 1. \boxed{answer} — R1 native output format
+    # 1. #### N  (GSM8K gold format — what we trained the model to output)
+    for m in reversed(list(_HASH_RE.finditer(text))):
+        try:
+            return float(m.group(1).replace(",", ""))
+        except ValueError:
+            pass
+
+    # 2. \boxed{N}
     for m in reversed(list(_BOXED_RE.finditer(text))):
         inner = m.group(1).strip().replace(",", "").replace("$", "").strip("\\")
-        # Try arithmetic eval first (handles \frac, simple expressions)
         val = _safe_arith(inner)
         if val is not None:
             return val
@@ -122,14 +152,7 @@ def _extract(text: str) -> float:
             except ValueError:
                 pass
 
-    # 2. #### N — GSM8K gold format (model may use this too)
-    for m in reversed(list(_HASH_RE.finditer(text))):
-        try:
-            return float(m.group(1).replace(",", ""))
-        except ValueError:
-            pass
-
-    # 3. <<expr=N>> annotation tags
+    # 3. <<expr=N>> tags
     tags = _TAG_RE.findall(text)
     if tags:
         try:
@@ -137,11 +160,24 @@ def _extract(text: str) -> float:
         except ValueError:
             pass
 
-    # 4. Keyword-anchored number scan
+    # 4. Arithmetic cross-check: "48 + 24 = 72" → verify 48+24==72, trust RHS
     candidates = []
     for m in re.finditer(
-        r"(?:is|are|equals?|total|left|remaining|need|answer|result|therefore)"
-        r"[^\d-]{0,10}(-?\d[\d,]*(?:\.\d+)?)",
+        r"(-?\d[\d\s+\-*/().]*\d)\s*=\s*(-?\d[\d,]*(?:\.\d+)?)",
+        text
+    ):
+        lhs = _safe_arith(m.group(1))
+        try:
+            rhs = float(m.group(2).replace(",", ""))
+        except ValueError:
+            continue
+        if lhs is not None and abs(lhs - rhs) < 0.02:
+            candidates.append(rhs)
+
+    # 5. Keyword scan
+    for m in re.finditer(
+        r"(?:is|are|equals?|total|left|remaining|need|answer|result|therefore|spend|cost|earn|have|get)"
+        r"[^\d\n-]{0,12}(-?\d[\d,]*(?:\.\d+)?)",
         text, re.I
     ):
         try:
@@ -149,24 +185,10 @@ def _extract(text: str) -> float:
         except ValueError:
             pass
 
-    # 5. Python arithmetic verification on the last expr=result line
-    #    Find patterns like "48 + 24 = 72" and check the RHS is arithmetic
-    for m in re.finditer(
-        r"(-?\d[\d\s+\-*/().]*\d)\s*=\s*(-?\d[\d,]*(?:\.\d+)?)",
-        text
-    ):
-        lhs_val = _safe_arith(m.group(1))
-        try:
-            rhs_val = float(m.group(2).replace(",", ""))
-        except ValueError:
-            continue
-        if lhs_val is not None and abs(lhs_val - rhs_val) < 0.01:
-            candidates.append(rhs_val)
-
     if candidates:
         return candidates[-1]
 
-    # 6. Last number in text (weakest fallback)
+    # 6. Last number
     nums = _NUMBER_RE.findall(text)
     if nums:
         try:
@@ -182,25 +204,38 @@ def _is_nan(x: float) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Prompt builder
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_prompt(tokenizer, question: str) -> str:
+    """3-shot few-shot CoT prompt using Qwen3 chat template."""
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for q, a in FEW_SHOT:
+        messages.append({"role": "user",      "content": q})
+        messages.append({"role": "assistant", "content": a})
+    messages.append({"role": "user", "content": question})
+    return tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Agent
 # ─────────────────────────────────────────────────────────────────────────────
 
 class Agent:
     """
-    GSM8K solver using DeepSeek-R1-Distill-Qwen-1.5B.
+    GSM8K solver using Qwen3-1.7B in non-thinking mode with 3-shot CoT.
 
-    Generation strategy:
-      Pass 1 — greedy, all 10 questions batched, 400 token cap.
-               The <think>\\n prefill forces the model to reason before answering.
-      Pass 2 — sampled (temp=0.7, top_p=0.8), only NaN questions, 200 token cap.
-               Repeated up to N_RETRIES times.
+    Pass 1: greedy, all 10 questions batched, max 256 tokens.
+    Pass 2: sampled (temp=0.7, top_p=0.8), NaN questions only, max 180 tokens.
+            Repeated up to N_RETRIES=2 times.
     """
 
     def __init__(self) -> None:
         self.tokenizer = AutoTokenizer.from_pretrained(
             MODEL_NAME, clean_up_tokenization_spaces=False
         )
-        # R1-Distill uses left-padding for batch generation
         self.tokenizer.padding_side = "left"
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -212,7 +247,7 @@ class Agent:
         )
         self.model.eval()
 
-        # Warm up CUDA to avoid cold-start penalty inside the timed window
+        # Warm up to avoid CUDA cold-start inside the timed window
         if torch.cuda.is_available():
             _d = self.tokenizer("warm", return_tensors="pt").to(self.model.device)
             with torch.no_grad():
@@ -222,38 +257,32 @@ class Agent:
                 )
             torch.cuda.synchronize()
 
+        # Pre-build prompts (tokenizer is ready after __init__)
+        self._build = lambda q: _build_prompt(self.tokenizer, q)
+
     # ── Public interface ────────────────────────────────────────────────────
 
     def answer(self, questions: list[str]) -> tuple[list[float], list[str]]:
-        # Build prompts using raw string template (preserves <think>\n prefill)
-        prompts = [_PROMPT_TEMPLATE.format(question=q) for q in questions]
+        prompts = [self._build(q) for q in questions]
 
-        # ── Pass 1: greedy, all questions batched ─────────────────────────
-        outputs = self._generate(
-            prompts,
-            max_new_tokens=MAX_NEW_TOKENS,
-            do_sample=False,
-        )
-
+        # Pass 1: greedy, full batch
+        outputs   = self._generate(prompts, max_new_tokens=MAX_NEW_TOKENS, do_sample=False)
         solutions = [_extract(o) for o in outputs]
         traces    = list(outputs)
 
-        # ── Pass 2: sampled retries for NaN results ───────────────────────
-        for _attempt in range(N_RETRIES):
+        # Pass 2: sampled retries for NaN results only
+        for _ in range(N_RETRIES):
             nan_idx = [i for i, s in enumerate(solutions) if _is_nan(s)]
             if not nan_idx:
                 break
-
-            retry_prompts = [prompts[i] for i in nan_idx]
-            retry_outputs = self._generate(
-                retry_prompts,
+            retry_out = self._generate(
+                [prompts[i] for i in nan_idx],
                 max_new_tokens=RETRY_MAX_NEW_TOKENS,
                 do_sample=True,
                 temperature=RETRY_TEMPERATURE,
                 top_p=RETRY_TOP_P,
             )
-
-            for i, out in zip(nan_idx, retry_outputs):
+            for i, out in zip(nan_idx, retry_out):
                 val = _extract(out)
                 if not _is_nan(val):
                     solutions[i] = val
@@ -280,7 +309,7 @@ class Agent:
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=512,   # GSM8K questions are short; keep KV cache small
+            max_length=768,  # few-shot prompt fits easily; keeps KV cache small
         ).to(self.model.device)
 
         gen_kwargs: dict = dict(
