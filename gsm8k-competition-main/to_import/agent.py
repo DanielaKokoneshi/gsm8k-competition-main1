@@ -1,12 +1,11 @@
 """
 GSM8K Competition Agent — optimized for ML Arena (target ≥7/10 per batch).
 
-STRATEGY (research-backed for small instruct models):
-- GSM8K-native few-shot with <<expr=result>> tags (matches gold format)
-- 3-shot examples covering easy arithmetic, rates, and hard multi-step patterns
-- Self-consistency: 1 greedy + 2 temperature-sampled passes, majority vote
+Fits the 60s batch timeout (same on Colab T4 and ML Arena):
+- One greedy batched pass always (~15–25s on T4)
+- Optional 2nd sampled pass only if time budget allows (self-consistency)
+- GSM8K-native few-shot with <<expr=result>> tags
 - Multi-layer answer extraction with arithmetic cross-check
-- Batched generation across all 10 questions per pass (fits 60s timeout)
 
 INTERFACE: Returns tuple[list[float], list[str]]
 """
@@ -14,6 +13,7 @@ INTERFACE: Returns tuple[list[float], list[str]]
 import ast
 import operator
 import re
+import time
 from collections import Counter
 
 import torch
@@ -24,16 +24,18 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 # ============================================================================
 
 MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
-MAX_NEW_TOKENS = 320
-NUM_SAMPLES = 3          # 1 greedy + 2 sampled for self-consistency
+MAX_NEW_TOKENS = 256
 SAMPLE_TEMPERATURE = 0.6
+
+# Env enforces 60s per batch; keep a safety margin for tokenize/decode overhead.
+BATCH_BUDGET_SEC = 52.0
+MIN_TIME_FOR_EXTRA_PASS_SEC = 18.0
 
 SYSTEM_PROMPT = """You are an expert at grade-school math word problems.
 Solve step by step. After each calculation write the expression and result using <<expression=result>> tags.
 End with exactly one line: #### <final numeric answer>
 Do not add any text after the #### line."""
 
-# Few-shot examples in native GSM8K format; third example mirrors common hard patterns.
 FEW_SHOT = [
     (
         "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?",
@@ -103,13 +105,11 @@ def _safe_arith_eval(expr: str):
 
 
 def _parse_final_number(text: str) -> float:
-    """Extract numeric answer; prefer #### then <<>> tags then expression lines."""
     if not text or not str(text).strip():
         return float("nan")
 
     text = str(text)
 
-    # Layer 1: GSM8K #### marker (primary)
     hash_answer = None
     if "####" in text:
         tail = text.rsplit("####", 1)[-1].strip()
@@ -120,7 +120,6 @@ def _parse_final_number(text: str) -> float:
             except ValueError:
                 pass
 
-    # Layer 2: <<expr=result>> tags — cross-check or fallback
     gsm_results = _GSM8K_RESULT_RE.findall(text)
     tag_answer = None
     if gsm_results:
@@ -139,17 +138,12 @@ def _parse_final_number(text: str) -> float:
     if tag_answer is not None:
         return tag_answer
 
-    # Layer 3: expression lines like "48+24 = 72"
-    expr_answer = None
     for m in _EXPR_LINE_RE.finditer(text):
         try:
-            expr_answer = float(m.group(6))
+            return float(m.group(6))
         except (ValueError, IndexError):
             continue
-    if expr_answer is not None:
-        return expr_answer
 
-    # Layer 4: evaluate LHS of "expr = result" and standalone expressions
     candidates = []
     for m in re.finditer(r"([0-9][0-9\s+\-*/().]*[0-9)])\s*=", text):
         val = _safe_arith_eval(m.group(1))
@@ -180,14 +174,12 @@ def _parse_final_number(text: str) -> float:
 
 
 def _majority_vote(answers: list[float]) -> float:
-    """Self-consistency: pick the most frequent valid numeric answer."""
-    valid = [a for a in answers if a == a]  # exclude NaN
+    valid = [a for a in answers if a == a]
     if not valid:
         return float("nan")
     rounded = [round(a, 4) for a in valid]
     winner, count = Counter(rounded).most_common(1)[0]
     if count == 1 and len(valid) > 1:
-        # No consensus — prefer answer from greedy pass (index 0) if valid
         return valid[0]
     return winner
 
@@ -206,12 +198,7 @@ def _build_messages(question: str) -> list[dict]:
 # ============================================================================
 
 class Agent:
-    """
-    Batch GSM8K solver: 3-shot GSM8K prompting + self-consistency voting.
-
-    Each batch runs NUM_SAMPLES generation passes (1 greedy, rest sampled),
-    extracts answers, and majority-votes per question. Target: ≥7/10.
-    """
+    """Batch GSM8K solver: greedy pass + optional 2nd pass if time allows."""
 
     def __init__(self):
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -260,13 +247,10 @@ class Agent:
             "max_new_tokens": MAX_NEW_TOKENS,
             "pad_token_id": self.tokenizer.eos_token_id,
             "repetition_penalty": 1.02,
+            "use_cache": True,
         }
         if do_sample:
-            gen_kwargs.update(
-                do_sample=True,
-                temperature=temperature,
-                top_p=0.95,
-            )
+            gen_kwargs.update(do_sample=True, temperature=temperature, top_p=0.95)
         else:
             gen_kwargs.update(do_sample=False)
 
@@ -274,45 +258,50 @@ class Agent:
             return self.model.generate(**inputs, **gen_kwargs)
 
     def _decode_outputs(self, output_ids, prompt_len: int) -> list[str]:
-        texts = []
-        for i in range(output_ids.shape[0]):
-            generated = output_ids[i, prompt_len:]
-            texts.append(
-                self.tokenizer.decode(generated, skip_special_tokens=True)
+        return [
+            self.tokenizer.decode(
+                output_ids[i, prompt_len:],
+                skip_special_tokens=True,
             )
-        return texts
+            for i in range(output_ids.shape[0])
+        ]
+
+    def _run_pass(self, inputs, prompt_len: int, *, do_sample: bool, temperature=None):
+        output_ids = self._generate_batch(
+            inputs, do_sample=do_sample, temperature=temperature
+        )
+        texts = self._decode_outputs(output_ids, prompt_len)
+        answers = [_parse_final_number(t) for t in texts]
+        return texts, answers
 
     def answer(self, questions: list[str]) -> tuple[list[float], list[str]]:
+        t0 = time.monotonic()
         inputs = self._tokenize_batch(questions)
         prompt_len = inputs["input_ids"].shape[1]
 
-        # Self-consistency: greedy pass + sampled passes, batched per pass.
-        all_answers: list[list[float]] = [[] for _ in questions]
-        all_traces: list[list[str]] = [[] for _ in questions]
+        traces, answers = self._run_pass(inputs, prompt_len, do_sample=False)
 
-        for sample_idx in range(NUM_SAMPLES):
-            do_sample = sample_idx > 0
-            output_ids = self._generate_batch(
+        elapsed = time.monotonic() - t0
+        remaining = BATCH_BUDGET_SEC - elapsed
+        if remaining >= MIN_TIME_FOR_EXTRA_PASS_SEC:
+            traces2, answers2 = self._run_pass(
                 inputs,
-                do_sample=do_sample,
-                temperature=SAMPLE_TEMPERATURE if do_sample else None,
+                prompt_len,
+                do_sample=True,
+                temperature=SAMPLE_TEMPERATURE,
             )
-            texts = self._decode_outputs(output_ids, prompt_len)
+            solutions = []
+            final_traces = []
+            for i in range(len(questions)):
+                sol = _majority_vote([answers[i], answers2[i]])
+                solutions.append(sol)
+                picked = traces[i]
+                if sol == sol:
+                    for text, ans in ((traces[i], answers[i]), (traces2[i], answers2[i])):
+                        if ans == ans and abs(ans - sol) < 1e-4:
+                            picked = text
+                            break
+                final_traces.append(picked)
+            return solutions, final_traces
 
-            for i, text in enumerate(texts):
-                all_traces[i].append(text)
-                all_answers[i].append(_parse_final_number(text))
-
-        solutions = [_majority_vote(votes) for votes in all_answers]
-
-        traces: list[str] = []
-        for i, sol in enumerate(solutions):
-            picked = all_traces[i][0]
-            if sol == sol:
-                for text, ans in zip(all_traces[i], all_answers[i]):
-                    if ans == ans and abs(ans - sol) < 1e-4:
-                        picked = text
-                        break
-            traces.append(picked)
-
-        return solutions, traces
+        return answers, traces
