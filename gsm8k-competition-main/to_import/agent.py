@@ -1,63 +1,44 @@
 """
-GSM8K Competition Agent — optimized for ML Arena (target ≥7/10 per batch).
+GSM8K Competition Agent — single greedy pass, fits 60s batch timeout on T4.
 
-Fits the 60s batch timeout (same on Colab T4 and ML Arena):
-- One greedy batched pass always (~15–25s on T4)
-- Optional 2nd sampled pass only if time budget allows (self-consistency)
-- GSM8K-native few-shot with <<expr=result>> tags
-- Multi-layer answer extraction with arithmetic cross-check
-
-INTERFACE: Returns tuple[list[float], list[str]]
+Strategy: one batched greedy generation (proven fast on Colab T4) plus
+GSM8K-native few-shot prompting and robust answer extraction.
 """
 
 import ast
 import operator
 import re
-import time
-from collections import Counter
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# ============================================================================
-# Constants
-# ============================================================================
-
 MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
-MAX_NEW_TOKENS = 256
-SAMPLE_TEMPERATURE = 0.6
+MAX_NEW_TOKENS = 224
 
-# Env enforces 60s per batch; keep a safety margin for tokenize/decode overhead.
-BATCH_BUDGET_SEC = 52.0
-MIN_TIME_FOR_EXTRA_PASS_SEC = 18.0
-
-SYSTEM_PROMPT = """You are an expert at grade-school math word problems.
-Solve step by step. After each calculation write the expression and result using <<expression=result>> tags.
-End with exactly one line: #### <final numeric answer>
-Do not add any text after the #### line."""
+SYSTEM_PROMPT = (
+    "You are an expert at grade-school math word problems. "
+    "Solve step by step using <<expression=result>> tags for each calculation. "
+    "End with exactly one line: #### <final numeric answer>"
+)
 
 FEW_SHOT = [
     (
         "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?",
         "Natalia sold 48/2 = <<48/2=24>>24 clips in May.\n"
-        "Natalia sold 48+24 = <<48+24=72>>72 clips altogether in April and May.\n#### 72",
+        "Natalia sold 48+24 = <<48+24=72>>72 clips altogether.\n#### 72",
     ),
     (
         "Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn?",
         "Weng earns 12/60 = <<12/60=0.2>>0.2 dollars per minute.\n"
-        "For 50 minutes she earned 0.2*50 = <<0.2*50=10>>10 dollars.\n#### 10",
+        "She earned 0.2*50 = <<0.2*50=10>>10 dollars.\n#### 10",
     ),
     (
         "Anaya wants to buy a telescope that costs 540 dollars. Her grandfather offers to pay two-fifths of the cost. She has 11 dollars saved toward the rest. How much more money does Anaya still need?",
-        "The grandfather pays two-fifths: 540*2/5 = <<540*2/5=216>>216 dollars.\n"
-        "Remaining cost: 540-216 = <<540-216=324>>324 dollars.\n"
-        "After savings: 324-11 = <<324-11=313>>313 dollars still needed.\n#### 313",
+        "Grandfather pays 540*2/5 = <<540*2/5=216>>216 dollars.\n"
+        "Remaining: 540-216 = <<540-216=324>>324 dollars.\n"
+        "Still needed: 324-11 = <<324-11=313>>313 dollars.\n#### 313",
     ),
 ]
-
-# ============================================================================
-# Answer extraction
-# ============================================================================
 
 _NUMBER_RE = re.compile(r"-?\d+(?:[.,]\d+)*")
 _GSM8K_RESULT_RE = re.compile(r"<<[^=]*=\s*(-?\d+(?:\.\d+)?)\s*>>")
@@ -173,17 +154,6 @@ def _parse_final_number(text: str) -> float:
     return float("nan")
 
 
-def _majority_vote(answers: list[float]) -> float:
-    valid = [a for a in answers if a == a]
-    if not valid:
-        return float("nan")
-    rounded = [round(a, 4) for a in valid]
-    winner, count = Counter(rounded).most_common(1)[0]
-    if count == 1 and len(valid) > 1:
-        return valid[0]
-    return winner
-
-
 def _build_messages(question: str) -> list[dict]:
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for q, a in FEW_SHOT:
@@ -193,13 +163,7 @@ def _build_messages(question: str) -> list[dict]:
     return messages
 
 
-# ============================================================================
-# Agent
-# ============================================================================
-
 class Agent:
-    """Batch GSM8K solver: greedy pass + optional 2nd pass if time allows."""
-
     def __init__(self):
         self.tokenizer = AutoTokenizer.from_pretrained(
             MODEL_NAME, clean_up_tokenization_spaces=False
@@ -208,11 +172,18 @@ class Agent:
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        self.model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-        )
+        load_kwargs = {
+            "torch_dtype": torch.bfloat16,
+            "device_map": "auto",
+        }
+        try:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                MODEL_NAME, attn_implementation="sdpa", **load_kwargs
+            )
+        except (TypeError, ValueError):
+            self.model = AutoModelForCausalLM.from_pretrained(
+                MODEL_NAME, **load_kwargs
+            )
         self.model.eval()
 
         if torch.cuda.is_available():
@@ -225,7 +196,7 @@ class Agent:
                 )
             torch.cuda.synchronize()
 
-    def _tokenize_batch(self, questions: list[str]):
+    def answer(self, questions: list[str]) -> tuple[list[float], list[str]]:
         prompts = [
             self.tokenizer.apply_chat_template(
                 _build_messages(q),
@@ -234,7 +205,8 @@ class Agent:
             )
             for q in questions
         ]
-        return self.tokenizer(
+
+        inputs = self.tokenizer(
             prompts,
             return_tensors="pt",
             padding=True,
@@ -242,66 +214,24 @@ class Agent:
             max_length=4096,
         ).to(self.model.device)
 
-    def _generate_batch(self, inputs, *, do_sample: bool, temperature=None):
-        gen_kwargs = {
-            "max_new_tokens": MAX_NEW_TOKENS,
-            "pad_token_id": self.tokenizer.eos_token_id,
-            "repetition_penalty": 1.02,
-            "use_cache": True,
-        }
-        if do_sample:
-            gen_kwargs.update(do_sample=True, temperature=temperature, top_p=0.95)
-        else:
-            gen_kwargs.update(do_sample=False)
-
         with torch.no_grad():
-            return self.model.generate(**inputs, **gen_kwargs)
+            output_ids = self.model.generate(
+                **inputs,
+                max_new_tokens=MAX_NEW_TOKENS,
+                do_sample=False,
+                pad_token_id=self.tokenizer.eos_token_id,
+                repetition_penalty=1.05,
+            )
 
-    def _decode_outputs(self, output_ids, prompt_len: int) -> list[str]:
-        return [
-            self.tokenizer.decode(
+        prompt_len = inputs["input_ids"].shape[1]
+        solutions = []
+        traces = []
+        for i in range(output_ids.shape[0]):
+            output = self.tokenizer.decode(
                 output_ids[i, prompt_len:],
                 skip_special_tokens=True,
             )
-            for i in range(output_ids.shape[0])
-        ]
+            traces.append(output)
+            solutions.append(_parse_final_number(output))
 
-    def _run_pass(self, inputs, prompt_len: int, *, do_sample: bool, temperature=None):
-        output_ids = self._generate_batch(
-            inputs, do_sample=do_sample, temperature=temperature
-        )
-        texts = self._decode_outputs(output_ids, prompt_len)
-        answers = [_parse_final_number(t) for t in texts]
-        return texts, answers
-
-    def answer(self, questions: list[str]) -> tuple[list[float], list[str]]:
-        t0 = time.monotonic()
-        inputs = self._tokenize_batch(questions)
-        prompt_len = inputs["input_ids"].shape[1]
-
-        traces, answers = self._run_pass(inputs, prompt_len, do_sample=False)
-
-        elapsed = time.monotonic() - t0
-        remaining = BATCH_BUDGET_SEC - elapsed
-        if remaining >= MIN_TIME_FOR_EXTRA_PASS_SEC:
-            traces2, answers2 = self._run_pass(
-                inputs,
-                prompt_len,
-                do_sample=True,
-                temperature=SAMPLE_TEMPERATURE,
-            )
-            solutions = []
-            final_traces = []
-            for i in range(len(questions)):
-                sol = _majority_vote([answers[i], answers2[i]])
-                solutions.append(sol)
-                picked = traces[i]
-                if sol == sol:
-                    for text, ans in ((traces[i], answers[i]), (traces2[i], answers2[i])):
-                        if ans == ans and abs(ans - sol) < 1e-4:
-                            picked = text
-                            break
-                final_traces.append(picked)
-            return solutions, final_traces
-
-        return answers, traces
+        return solutions, traces
