@@ -1,184 +1,165 @@
 """
-GSM8K Competition Agent — Qwen/Qwen3-1.7B, non-thinking mode + few-shot CoT
+GSM8K Competition Agent — optimized for ML Arena (target ≥7/10 per batch).
 
-WHY THIS MODEL:
-  Qwen3-1.7B is pre-cached and is the best available model in the list for math:
-  - Newer architecture than Qwen2.5-1.5B-Instruct (the previous 7/10 baseline)
-  - Qwen3-1.7B-Base outperforms Qwen2.5-3B on STEM benchmarks despite fewer params
-  - Supports /no_think mode: full reasoning quality WITHOUT runaway think chains
-  - Research finding: on GSM8K, thinking mode is WORSE than non-thinking mode
-    because the model overthinks simple arithmetic (gets lost in loops)
+STRATEGY (research-backed for small instruct models):
+- GSM8K-native few-shot with <<expr=result>> tags (matches gold format)
+- 3-shot examples covering easy arithmetic, rates, and hard multi-step patterns
+- Self-consistency: 1 greedy + 2 temperature-sampled passes, majority vote
+- Multi-layer answer extraction with arithmetic cross-check
+- Batched generation across all 10 questions per pass (fits 60s timeout)
 
-WHY NOT DeepSeek-R1-Distill-Qwen-1.5B:
-  - Think chains avg 370+ tokens/question → 3700 tokens for 10 questions → ~53s
-    (you actually observed this: 53s batch time, nearly timed out)
-  - Scored 6/10 vs Qwen2.5-1.5B's 7/10 despite being "math specialized"
-
-STRATEGY:
-  1. Qwen3-1.7B in /no_think mode — fast, deterministic, smarter baseline
-  2. 3-shot few-shot CoT with #### answer format (matches GSM8K gold format)
-  3. Single batched greedy pass, all 10 questions, max 256 tokens
-  4. NaN-only retry: 2 sampled passes (temp=0.7, top_p=0.8) batched together
-  5. Python arithmetic cross-check on extracted candidates (catches wrong RHS)
-
-BUDGET (arena: ~24GB GPU, ~300+ tok/s for 1.7B bfloat16):
-  Primary:  10q × 256 tok = 2560 tokens ÷ 300 tok/s ≈ 9s
-  Retry:    ≤10q × 2 × 180 tok = 3600 tokens ÷ 300 tok/s ≈ 12s worst case
-  Total: ~25s — well inside 60s with large safety margin.
-
-INTERFACE: tuple[list[float], list[str]]
+INTERFACE: Returns tuple[list[float], list[str]]
 """
 
 import ast
 import operator
 import re
+from collections import Counter
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Config
-# ─────────────────────────────────────────────────────────────────────────────
+# ============================================================================
+# Constants
+# ============================================================================
 
-MODEL_NAME = "Qwen/Qwen3-1.7B"
+MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+MAX_NEW_TOKENS = 320
+NUM_SAMPLES = 3          # 1 greedy + 2 sampled for self-consistency
+SAMPLE_TEMPERATURE = 0.6
 
-# /no_think tells Qwen3 to skip the <think> chain entirely.
-# Research shows this is FASTER and BETTER on GSM8K-level problems.
-SYSTEM_PROMPT = (
-    "/no_think\n"
-    "You are a math problem solver. "
-    "Solve step by step and end your answer with exactly: #### <number>"
-)
+SYSTEM_PROMPT = """You are an expert at grade-school math word problems.
+Solve step by step. After each calculation write the expression and result using <<expression=result>> tags.
+End with exactly one line: #### <final numeric answer>
+Do not add any text after the #### line."""
 
-# 3-shot examples — high-quality, varied, matching GSM8K gold format
+# Few-shot examples in native GSM8K format; third example mirrors common hard patterns.
 FEW_SHOT = [
     (
-        "Natalia sold clips to 48 of her friends in April, and then she sold "
-        "half as many clips in May. How many clips did she sell altogether?",
-        "April: 48 clips.\nMay: 48/2 = 24 clips.\nTotal: 48 + 24 = 72.\n#### 72",
+        "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?",
+        "Natalia sold 48/2 = <<48/2=24>>24 clips in May.\n"
+        "Natalia sold 48+24 = <<48+24=72>>72 clips altogether in April and May.\n#### 72",
     ),
     (
-        "Weng earns $12 an hour for babysitting. Yesterday she did 50 minutes "
-        "of babysitting. How much did she earn?",
-        "Rate: 12/60 = $0.20 per minute.\nEarnings: 0.20 × 50 = $10.\n#### 10",
+        "Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn?",
+        "Weng earns 12/60 = <<12/60=0.2>>0.2 dollars per minute.\n"
+        "For 50 minutes she earned 0.2*50 = <<0.2*50=10>>10 dollars.\n#### 10",
     ),
     (
-        "A robe takes 2 bolts of blue fiber and half that much white fiber. "
-        "How many bolts in total does it take?",
-        "Blue: 2 bolts.\nWhite: 2/2 = 1 bolt.\nTotal: 2 + 1 = 3 bolts.\n#### 3",
+        "Anaya wants to buy a telescope that costs 540 dollars. Her grandfather offers to pay two-fifths of the cost. She has 11 dollars saved toward the rest. How much more money does Anaya still need?",
+        "The grandfather pays two-fifths: 540*2/5 = <<540*2/5=216>>216 dollars.\n"
+        "Remaining cost: 540-216 = <<540-216=324>>324 dollars.\n"
+        "After savings: 324-11 = <<324-11=313>>313 dollars still needed.\n#### 313",
     ),
 ]
 
-MAX_NEW_TOKENS       = 256   # enough for GSM8K CoT; avoids runaway generation
-RETRY_MAX_NEW_TOKENS = 180
-N_RETRIES            = 2
-RETRY_TEMPERATURE    = 0.7
-RETRY_TOP_P          = 0.8
-
-# ─────────────────────────────────────────────────────────────────────────────
+# ============================================================================
 # Answer extraction
-# ─────────────────────────────────────────────────────────────────────────────
+# ============================================================================
 
 _NUMBER_RE = re.compile(r"-?\d+(?:[.,]\d+)*")
-_HASH_RE   = re.compile(r"####\s*(-?[\d,]+(?:\.\d+)?)")
-_BOXED_RE  = re.compile(r"\\boxed\{([^}]*)\}")
-_TAG_RE    = re.compile(r"<<[^=]*=\s*(-?\d+(?:\.\d+)?)\s*>>")
+_GSM8K_RESULT_RE = re.compile(r"<<[^=]*=\s*(-?\d+(?:\.\d+)?)\s*>>")
+_EXPR_LINE_RE = re.compile(
+    r"(?:^|[\s=])(-?\d+(?:\.\d+)?)\s*([+\-*/])\s*(-?\d+(?:\.\d+)?)"
+    r"(?:\s*([+\-*/])\s*(-?\d+(?:\.\d+)?))?\s*=\s*(-?\d+(?:\.\d+)?)",
+    re.MULTILINE,
+)
 
 _BINOPS = {
-    ast.Add: operator.add,  ast.Sub: operator.sub,
-    ast.Mult: operator.mul, ast.Div: operator.truediv,
-    ast.FloorDiv: operator.floordiv, ast.Pow: operator.pow,
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Pow: operator.pow,
     ast.USub: operator.neg,
 }
 
 
-def _safe_arith(expr: str):
-    """Evaluate a pure arithmetic expression safely (no eval())."""
-    expr = expr.strip().replace(",", "").replace(" ", "")
-    if not expr or not re.fullmatch(r"[\d+\-*/().]+", expr):
+def _safe_arith_eval(expr: str):
+    expr = expr.strip().replace(",", "")
+    if not expr or not re.fullmatch(r"[\d\s+\-*/().]+", expr):
         return None
     try:
-        tree = ast.parse(expr, mode="eval")
+        node = ast.parse(expr, mode="eval")
     except SyntaxError:
         return None
 
-    def _ev(n):
-        if isinstance(n, ast.Expression):  return _ev(n.body)
+    def _eval(n):
+        if isinstance(n, ast.Expression):
+            return _eval(n.body)
         if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
             return float(n.value)
         if isinstance(n, ast.UnaryOp) and type(n.op) in _BINOPS:
-            return _BINOPS[type(n.op)](_ev(n.operand))
+            return _BINOPS[type(n.op)](_eval(n.operand))
         if isinstance(n, ast.BinOp) and type(n.op) in _BINOPS:
-            return _BINOPS[type(n.op)](_ev(n.left), _ev(n.right))
-        raise ValueError
+            return _BINOPS[type(n.op)](_eval(n.left), _eval(n.right))
+        raise ValueError("unsupported expression")
 
     try:
-        result = _ev(tree)
-        return result if result == result else None
-    except Exception:
+        return float(_eval(node))
+    except (ValueError, TypeError, ZeroDivisionError, OverflowError):
         return None
 
 
-def _extract(text: str) -> float:
-    """
-    Extract final numeric answer. Priority:
-      1. #### N          — GSM8K gold format (primary target)
-      2. \\boxed{N}      — fallback if model uses LaTeX style
-      3. <<expr=N>>      — GSM8K annotation tags
-      4. Arithmetic cross-check: find "expr = N" lines, verify with Python
-      5. Keyword scan    — contextual anchor words
-      6. Last number     — weakest fallback
-    """
-    if not text:
+def _parse_final_number(text: str) -> float:
+    """Extract numeric answer; prefer #### then <<>> tags then expression lines."""
+    if not text or not str(text).strip():
         return float("nan")
 
-    # 1. #### N  (GSM8K gold format — what we trained the model to output)
-    for m in reversed(list(_HASH_RE.finditer(text))):
-        try:
-            return float(m.group(1).replace(",", ""))
-        except ValueError:
-            pass
+    text = str(text)
 
-    # 2. \boxed{N}
-    for m in reversed(list(_BOXED_RE.finditer(text))):
-        inner = m.group(1).strip().replace(",", "").replace("$", "").strip("\\")
-        val = _safe_arith(inner)
-        if val is not None:
-            return val
-        nums = _NUMBER_RE.findall(inner)
-        if nums:
+    # Layer 1: GSM8K #### marker (primary)
+    hash_answer = None
+    if "####" in text:
+        tail = text.rsplit("####", 1)[-1].strip()
+        matches = _NUMBER_RE.findall(tail)
+        if matches:
             try:
-                return float(nums[-1].replace(",", ""))
+                hash_answer = float(matches[0].replace(",", ""))
             except ValueError:
                 pass
 
-    # 3. <<expr=N>> tags
-    tags = _TAG_RE.findall(text)
-    if tags:
+    # Layer 2: <<expr=result>> tags — cross-check or fallback
+    gsm_results = _GSM8K_RESULT_RE.findall(text)
+    tag_answer = None
+    if gsm_results:
         try:
-            return float(tags[-1])
+            tag_answer = float(gsm_results[-1])
         except ValueError:
             pass
 
-    # 4. Arithmetic cross-check: "48 + 24 = 72" → verify 48+24==72, trust RHS
-    candidates = []
-    for m in re.finditer(
-        r"(-?\d[\d\s+\-*/().]*\d)\s*=\s*(-?\d[\d,]*(?:\.\d+)?)",
-        text
-    ):
-        lhs = _safe_arith(m.group(1))
-        try:
-            rhs = float(m.group(2).replace(",", ""))
-        except ValueError:
-            continue
-        if lhs is not None and abs(lhs - rhs) < 0.02:
-            candidates.append(rhs)
+    if hash_answer is not None:
+        if tag_answer is not None and abs(hash_answer - tag_answer) > 1e-3:
+            intermediates = [float(t) for t in gsm_results[:-1]]
+            if any(abs(hash_answer - x) < 1e-3 for x in intermediates):
+                return tag_answer
+        return hash_answer
 
-    # 5. Keyword scan
+    if tag_answer is not None:
+        return tag_answer
+
+    # Layer 3: expression lines like "48+24 = 72"
+    expr_answer = None
+    for m in _EXPR_LINE_RE.finditer(text):
+        try:
+            expr_answer = float(m.group(6))
+        except (ValueError, IndexError):
+            continue
+    if expr_answer is not None:
+        return expr_answer
+
+    # Layer 4: evaluate LHS of "expr = result" and standalone expressions
+    candidates = []
+    for m in re.finditer(r"([0-9][0-9\s+\-*/().]*[0-9)])\s*=", text):
+        val = _safe_arith_eval(m.group(1))
+        if val is not None:
+            candidates.append(val)
+
     for m in re.finditer(
-        r"(?:is|are|equals?|total|left|remaining|need|answer|result|therefore|spend|cost|earn|have|get)"
-        r"[^\d\n-]{0,12}(-?\d[\d,]*(?:\.\d+)?)",
-        text, re.I
+        r"(?:is|are|equals?|total|left|remaining|need|answer)\s+(-?\d+(?:\.\d+)?)",
+        text,
+        re.I,
     ):
         try:
             candidates.append(float(m.group(1).replace(",", "")))
@@ -188,51 +169,51 @@ def _extract(text: str) -> float:
     if candidates:
         return candidates[-1]
 
-    # 6. Last number
-    nums = _NUMBER_RE.findall(text)
-    if nums:
+    all_nums = _NUMBER_RE.findall(text)
+    if all_nums:
         try:
-            return float(nums[-1].replace(",", ""))
+            return float(all_nums[-1].replace(",", ""))
         except ValueError:
             pass
 
     return float("nan")
 
 
-def _is_nan(x: float) -> bool:
-    return x != x
+def _majority_vote(answers: list[float]) -> float:
+    """Self-consistency: pick the most frequent valid numeric answer."""
+    valid = [a for a in answers if a == a]  # exclude NaN
+    if not valid:
+        return float("nan")
+    rounded = [round(a, 4) for a in valid]
+    winner, count = Counter(rounded).most_common(1)[0]
+    if count == 1 and len(valid) > 1:
+        # No consensus — prefer answer from greedy pass (index 0) if valid
+        return valid[0]
+    return winner
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Prompt builder
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _build_prompt(tokenizer, question: str) -> str:
-    """3-shot few-shot CoT prompt using Qwen3 chat template."""
+def _build_messages(question: str) -> list[dict]:
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for q, a in FEW_SHOT:
-        messages.append({"role": "user",      "content": q})
+        messages.append({"role": "user", "content": q})
         messages.append({"role": "assistant", "content": a})
     messages.append({"role": "user", "content": question})
-    return tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
+    return messages
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ============================================================================
 # Agent
-# ─────────────────────────────────────────────────────────────────────────────
+# ============================================================================
 
 class Agent:
     """
-    GSM8K solver using Qwen3-1.7B in non-thinking mode with 3-shot CoT.
+    Batch GSM8K solver: 3-shot GSM8K prompting + self-consistency voting.
 
-    Pass 1: greedy, all 10 questions batched, max 256 tokens.
-    Pass 2: sampled (temp=0.7, top_p=0.8), NaN questions only, max 180 tokens.
-            Repeated up to N_RETRIES=2 times.
+    Each batch runs NUM_SAMPLES generation passes (1 greedy, rest sampled),
+    extracts answers, and majority-votes per question. Target: ≥7/10.
     """
 
-    def __init__(self) -> None:
+    def __init__(self):
         self.tokenizer = AutoTokenizer.from_pretrained(
             MODEL_NAME, clean_up_tokenization_spaces=False
         )
@@ -247,86 +228,91 @@ class Agent:
         )
         self.model.eval()
 
-        # Warm up to avoid CUDA cold-start inside the timed window
         if torch.cuda.is_available():
-            _d = self.tokenizer("warm", return_tensors="pt").to(self.model.device)
+            dummy = self.tokenizer("warm-up", return_tensors="pt").to(self.model.device)
             with torch.no_grad():
                 self.model.generate(
-                    **_d, max_new_tokens=1,
+                    **dummy,
+                    max_new_tokens=1,
                     pad_token_id=self.tokenizer.eos_token_id,
                 )
             torch.cuda.synchronize()
 
-        # Pre-build prompts (tokenizer is ready after __init__)
-        self._build = lambda q: _build_prompt(self.tokenizer, q)
-
-    # ── Public interface ────────────────────────────────────────────────────
-
-    def answer(self, questions: list[str]) -> tuple[list[float], list[str]]:
-        prompts = [self._build(q) for q in questions]
-
-        # Pass 1: greedy, full batch
-        outputs   = self._generate(prompts, max_new_tokens=MAX_NEW_TOKENS, do_sample=False)
-        solutions = [_extract(o) for o in outputs]
-        traces    = list(outputs)
-
-        # Pass 2: sampled retries for NaN results only
-        for _ in range(N_RETRIES):
-            nan_idx = [i for i, s in enumerate(solutions) if _is_nan(s)]
-            if not nan_idx:
-                break
-            retry_out = self._generate(
-                [prompts[i] for i in nan_idx],
-                max_new_tokens=RETRY_MAX_NEW_TOKENS,
-                do_sample=True,
-                temperature=RETRY_TEMPERATURE,
-                top_p=RETRY_TOP_P,
+    def _tokenize_batch(self, questions: list[str]):
+        prompts = [
+            self.tokenizer.apply_chat_template(
+                _build_messages(q),
+                tokenize=False,
+                add_generation_prompt=True,
             )
-            for i, out in zip(nan_idx, retry_out):
-                val = _extract(out)
-                if not _is_nan(val):
-                    solutions[i] = val
-                    traces[i]    = out
-
-        return solutions, traces
-
-    # ── Generation helper ───────────────────────────────────────────────────
-
-    def _generate(
-        self,
-        prompts: list[str],
-        *,
-        max_new_tokens: int,
-        do_sample: bool,
-        temperature: float = None,
-        top_p: float = None,
-    ) -> list[str]:
-        if not prompts:
-            return []
-
-        inputs = self.tokenizer(
+            for q in questions
+        ]
+        return self.tokenizer(
             prompts,
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=768,  # few-shot prompt fits easily; keeps KV cache small
+            max_length=4096,
         ).to(self.model.device)
 
-        gen_kwargs: dict = dict(
-            max_new_tokens=max_new_tokens,
-            pad_token_id=self.tokenizer.eos_token_id,
-            repetition_penalty=1.05,
-        )
+    def _generate_batch(self, inputs, *, do_sample: bool, temperature=None):
+        gen_kwargs = {
+            "max_new_tokens": MAX_NEW_TOKENS,
+            "pad_token_id": self.tokenizer.eos_token_id,
+            "repetition_penalty": 1.02,
+        }
         if do_sample:
-            gen_kwargs.update(do_sample=True, temperature=temperature, top_p=top_p)
+            gen_kwargs.update(
+                do_sample=True,
+                temperature=temperature,
+                top_p=0.95,
+            )
         else:
-            gen_kwargs.update(do_sample=False, temperature=None, top_p=None)
+            gen_kwargs.update(do_sample=False)
 
         with torch.no_grad():
-            out_ids = self.model.generate(**inputs, **gen_kwargs)
+            return self.model.generate(**inputs, **gen_kwargs)
 
+    def _decode_outputs(self, output_ids, prompt_len: int) -> list[str]:
+        texts = []
+        for i in range(output_ids.shape[0]):
+            generated = output_ids[i, prompt_len:]
+            texts.append(
+                self.tokenizer.decode(generated, skip_special_tokens=True)
+            )
+        return texts
+
+    def answer(self, questions: list[str]) -> tuple[list[float], list[str]]:
+        inputs = self._tokenize_batch(questions)
         prompt_len = inputs["input_ids"].shape[1]
-        return [
-            self.tokenizer.decode(out_ids[i, prompt_len:], skip_special_tokens=True)
-            for i in range(len(prompts))
-        ]
+
+        # Self-consistency: greedy pass + sampled passes, batched per pass.
+        all_answers: list[list[float]] = [[] for _ in questions]
+        all_traces: list[list[str]] = [[] for _ in questions]
+
+        for sample_idx in range(NUM_SAMPLES):
+            do_sample = sample_idx > 0
+            output_ids = self._generate_batch(
+                inputs,
+                do_sample=do_sample,
+                temperature=SAMPLE_TEMPERATURE if do_sample else None,
+            )
+            texts = self._decode_outputs(output_ids, prompt_len)
+
+            for i, text in enumerate(texts):
+                all_traces[i].append(text)
+                all_answers[i].append(_parse_final_number(text))
+
+        solutions = [_majority_vote(votes) for votes in all_answers]
+
+        traces: list[str] = []
+        for i, sol in enumerate(solutions):
+            picked = all_traces[i][0]
+            if sol == sol:
+                for text, ans in zip(all_traces[i], all_answers[i]):
+                    if ans == ans and abs(ans - sol) < 1e-4:
+                        picked = text
+                        break
+            traces.append(picked)
+
+        return solutions, traces
