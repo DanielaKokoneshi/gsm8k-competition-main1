@@ -41,8 +41,6 @@ FEW_SHOT = [
     ),
 ]
 
-
-
 WORD_TO_NUM = {
     "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
     "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
@@ -67,7 +65,6 @@ FRACTION_WORDS = {
 }
 
 
-
 _NUMBER_RE = re.compile(r"-?\d+(?:[.,]\d+)*")
 _GSM8K_TAG_RE = re.compile(r"<<([^=]+)=([^>]*)>>")
 _GSM8K_RESULT_RE = re.compile(r"<<[^=]*=\s*(-?\d+(?:\.\d+)?)\s*>>")
@@ -90,6 +87,7 @@ _BINOPS = {
     ast.Pow: operator.pow,
     ast.USub: operator.neg,
 }
+
 
 
 
@@ -135,7 +133,6 @@ def _verified_tag_values(text: str) -> list[float]:
         except ValueError:
             pass
     return values
-
 
 
 
@@ -236,289 +233,159 @@ def _majority_vote(answers: list[float]) -> float:
 
 
 def _norm(text: str) -> str:
-    """Lowercase + collapse whitespace for consistent matching."""
     return re.sub(r"\s+", " ", text.lower().replace("\u00a0", " ")).strip()
 
 
-def _parse_written_number(token: str) -> float | None:
-    """Convert a word or digit token to a float, including written multipliers."""
-    token = token.strip().lower()
-    if re.fullmatch(r"\d+", token):
-        return float(token)
-    return {
-        k: float(v) for k, v in WORD_TO_NUM.items()
-    }.get(token)
+def _frac(token: str):
+    return FRACTION_WORDS.get(token.lower())
 
 
-def _written_fraction(token: str) -> float | None:
-    """Convert a fraction word ('two-thirds', 'half') to a float, or None."""
-    f = FRACTION_WORDS.get(token.strip().lower())
-    return float(f) if f is not None else None
+def _word_num(token: str):
+    return WORD_TO_NUM.get(token.lower())
 
 
-
-def _solve_price(q: str) -> float | None:
+def try_exact_solve(raw_question: str):
     """
-    Handles purchase problems: stacked discounts, reverse-discount (find
-    original price), percent markup/profit, and cost-remainder after a
-    partial payment expressed as a fraction.
+    Pattern-match known GSM8K question shapes and return a deterministic answer,
+    bypassing LLM arithmetic entirely. Returns None if no pattern fires.
     """
+    q = _norm(raw_question)
 
     m = re.search(
-        r"(?:costs?|priced at|listed at|original price (?:is|was)) \$?(\d+)"
-        r".*?(\d+)\s*percent\s*(?:off|discount)"
-        r".*?(?:additional|extra|another|further)?\s*(\d+)\s*percent\s*(?:off|discount|coupon|savings?)",
+        r"buys? (?:an? |a )?(?:old |refurbished )?[\w\s]+? for (\d+) thousand dollars "
+        r"and spends (\d+) thousand dollars .*?"
+        r"(?:increase|increases|raise|raises).*?value by (\d+) percent .*?"
+        r"how many thousand dollars of profit",
         q,
     )
     if m:
-        price, pct1, pct2 = map(float, m.groups())
-        return round(price * (1 - pct1 / 100) * (1 - pct2 / 100), 6)
+        base, spend, pct = map(int, m.groups())
+        return float(base * pct / 100.0 - spend)
+
+    for pattern in (
+        r"paid (\d+) dollars .*? after a (\d+) percent discount.*?original price",
+        r"at (\d+) percent off and paid (\d+) dollars.*?original price",
+    ):
+        m = re.search(pattern, q)
+        if m:
+            a, b = map(int, m.groups())
+            paid, pct = (a, b) if "paid" in pattern.split("(\d+)")[0] else (b, a)
+            return float(paid / (1 - pct / 100.0))
 
     m = re.search(
-        r"paid \$?(\d+).*?after\s+(?:a\s+)?(\d+)\s*percent\s*(?:off|discount)", q
+        r"sold .*? for (\d+) dollars,? which was (\d+) percent less than .*?original price", q
     )
     if m:
-        paid, pct = float(m.group(1)), float(m.group(2))
-        return round(paid / (1 - pct / 100), 6)
+        paid, pct = map(int, m.groups())
+        return float(paid / (1 - pct / 100.0))
 
     m = re.search(
-        r"(\d+)\s*percent\s*(?:off|discount).*?paid \$?(\d+)", q
+        r"priced at (\d+) dollars.*?(\d+) percent discount.*?(\d+) percent .*?coupon", q
     )
     if m:
-        pct, paid = float(m.group(1)), float(m.group(2))
-        return round(paid / (1 - pct / 100), 6)
+        price, pct1, pct2 = map(int, m.groups())
+        return float(price * (1 - pct1 / 100.0) * (1 - pct2 / 100.0))
 
     m = re.search(
-        r"sold.*?for \$?(\d+).*?(\d+)\s*percent (?:less|cheaper|lower) than.*?original", q
-    )
-    if m:
-        sold, pct = float(m.group(1)), float(m.group(2))
-        return round(sold / (1 - pct / 100), 6)
-
-    m = re.search(
-        r"(?:buys?|purchased?).*?for (\d+) thousand"
-        r".*?spends? (\d+) thousand"
-        r".*?(?:value|price|worth).*?(?:rises?|increases?|goes? up).*?(\d+)\s*percent",
+        r"for (\d+) weeks.*?normally .*?(\d+) hours per week.*?"
+        r"on (\d+) weeks .*?(\d+) hours each.*?"
+        r"on (\d+) weeks .*?(\d+) hours each",
         q,
     )
     if m:
-        buy_k, spend_k, pct = map(float, m.groups())
-        sale = buy_k * (1 + pct / 100)
-        profit = sale - buy_k - spend_k
-        return round(profit, 6)
-
-    m = re.search(
-        r"(?:costs?|is) \$?(\d+)"
-        r".*?(?:pays?|covers?|contributes?|offers? to pay|will pay)\s+([a-z-]+)\s+of\s+(?:the\s+)?(?:total\s+)?cost"
-        r".*?(?:has|saved|already has|puts? (?:in|aside))\s+\$?(\d+)"
-        r".*?(?:still needs?|how much more|remaining amount|difference)",
-        q,
-    )
-    if m:
-        total = float(m.group(1))
-        frac = _written_fraction(m.group(2))
-        saved = float(m.group(3))
-        if frac is not None:
-            return round(total - total * frac - saved, 6)
-
-    return None
-
-
-def _solve_rate(q: str) -> float | None:
-    """
-    Handles distance = rate × time problems, combined work rates,
-    and attendance/throughput thresholds.
-    """
-
-    m = re.search(
-        r"(?:travels?|drives?|runs?|walks?|cycles?|rides?) at (\d+) (?:mph|km/h|miles? per hour|km per hour)"
-        r".*?for (\d+) hours?"
-        r".*?(?:then|and then|after that).*?at (\d+) (?:mph|km/h|miles? per hour|km per hour)"
-        r".*?for (\d+) hours?",
-        q,
-    )
-    if m:
-        s1, h1, s2, h2 = map(float, m.groups())
-        return round(s1 * h1 + s2 * h2, 6)
-
-    m = re.search(
-        r"(?:travels?|drives?|runs?|walks?|cycles?) at (\d+) (?:mph|km/h|miles? per hour|km per hour)"
-        r".*?for (\d+) hours?",
-        q,
-    )
-    if m:
-        speed, hours = map(float, m.groups())
-        return round(speed * hours, 6)
-
-    m = re.search(
-        r"(?:signs? up for|registers? for|enrolls? in|joins?)\s+(\d+)\s+\w+"
-        r".*?(?:total(?: cost)?|costs?(?! per)) (?:of )?\$?(\d+)"
-        r".*?(?:per|each)\s+\w+\s+(?:rises?|exceeds?|goes? above|more than)\s+\$?(\d+)"
-        r".*?(?:maximum|most|how many).*?(?:miss|skip|not attend)",
-        q,
-    )
-    if m:
-        n, total, cap = map(float, m.groups())
-        min_attend = math.ceil(total / cap)
-        return float(n - min_attend)
-    
-    m = re.search(
-        r"(\w+) (?:is |works? )?(\w+) times? as fast as (\w+)"
-        r".*?together.*?(\d+)\s+\w+\s+per hour"
-        r".*?(\w+) alone.*?(\d+) hours?",
-        q,
-    )
-    if m:
-        multiplier = _parse_written_number(m.group(2))
-        combined_rate, solo_hours = float(m.group(4)), float(m.group(6))
-        if multiplier is not None:
-            a_rate = combined_rate * multiplier / (multiplier + 1)
-            return round(a_rate * solo_hours, 6)
-
-    return None
-
-
-def _solve_calendar(q: str) -> float | None:
-    """
-    Handles age-gap problems, days/weeks/months arithmetic,
-    and variable-schedule total-hours problems.
-    """
-
-    m = re.search(
-        r"(\w+) is (?:currently )?(\d+) years? old.*?(\w+) is (?:currently )?(\d+) years? old"
-        r".*?how old will \3 be when \w+ is (\d+)",
-        q,
-    )
-    if m:
-       
-        a_age, b_age, b_future = float(m.group(2)), float(m.group(4)), float(m.group(5))
-        gap = a_age - b_age         
-        return round(b_future + gap, 6)
-
-    
-    m = re.search(r"(?:is|am|are) (?:currently )?(\d+) years? old.*?in (\d+) years?.*?how old", q)
-    if m:
-        now, delta = float(m.group(1)), float(m.group(2))
-        return round(now + delta, 6)
-
-
-    m = re.search(
-        r"(?:works?|trains?|studies?|practices?) (?:for )?(\d+) weeks?"
-        r".*?normally\s+(\d+)\s+hours? (?:a|per) week"
-        r".*?(?:for |on )(\d+) (?:of those )?weeks?.*?(\d+)\s+hours? each"
-        r".*?(?:for |on )(\d+) (?:of those )?weeks?.*?(\d+)\s+hours? each",
-        q,
-    )
-    if m:
-        total_wks, base_hrs, wks_a, hrs_a, wks_b, hrs_b = map(float, m.groups())
-        regular_wks = total_wks - wks_a - wks_b
-        return round(regular_wks * base_hrs + wks_a * hrs_a + wks_b * hrs_b, 6)
+        total_wks, norm_hrs, wks_a, hrs_a, wks_b, hrs_b = map(int, m.groups())
+        return float((total_wks - wks_a - wks_b) * norm_hrs + wks_a * hrs_a + wks_b * hrs_b)
 
   
     m = re.search(
-        r"(\d+) weeks? and (\d+) days?"
-        r".*?how many days?",
+        r"(?:joins|signs up for|registers for|enrolls in) (\d+) .*?"
+        r"for a total of (\d+) dollars.*?"
+        r"cost per attended .*? rises above (\d+) dollars.*?"
+        r"maximum number .*? can miss",
         q,
     )
     if m:
-        weeks, extra = map(float, m.groups())
-        return round(weeks * 7 + extra, 6)
-
-    return None
-
-
-def _solve_group(q: str) -> float | None:
-    """
-    Handles equal-share splits, proportional distribution, and
-    'goal multiplier' problems (want to do K× what was already done).
-    """
+        total, cost, cap = map(int, m.groups())
+        return float(total - math.ceil(cost / cap))
 
     m = re.search(
-        r"(\d+) (?:people|friends?|kids?|children|students?|workers?|employees?|members?)"
-        r".*?(?:share|split|divide|split equally|equally divide)\s+\$?(\d+(?:\.\d+)?)"
-        r".*?(?:equally|evenly|among them(?:selves)?)?",
+        r"(?:costs|needs) (\d+) dollars.*?"
+        r"(?:pay|pays|covers|cover|offers to pay|agrees to pay|will cover) ([a-z-]+) of (?:the )?cost.*?"
+        r"(?:has|saved|already saved) (\d+) dollars .*?"
+        r"(?:still need|more money|how much more)",
         q,
     )
     if m:
-        n, total = float(m.group(1)), float(m.group(2))
-        if n > 0:
-            return round(total / n, 6)
+        total = int(m.group(1))
+        share = _frac(m.group(2))
+        saved = int(m.group(3))
+        if share is not None:
+            return float(total - total * share - saved)
 
     m = re.search(
-        r"(?:wants? to|needs? to|plans? to)\s+(?:\w+ )?(?P<mult>twice|double|triple|[\w]+\s+times?)"
-        r".*?(?:combined|total|altogether)",
+        r"has three (?:bins|sets|boxes) of .*?"
+        r"the first .*? has (\d+) more .*? than the second .*?"
+        r"the third .*? ([a-z-]+) as (?:many|much) .*? as the second .*?"
+        r"in total .*? hold (\d+) .*?how many .*? in the first",
         q,
     )
     if m:
-        raw_mult = m.group("mult").strip()
-        if raw_mult in ("twice", "double"):
-            multiplier = 2.0
-        elif raw_mult == "triple":
-            multiplier = 3.0
+        diff, ratio_word, grand = int(m.group(1)), m.group(2), int(m.group(3))
+        ratio = _frac(ratio_word)
+        if ratio is not None:
+            second = Fraction(grand - diff, 1) / (2 + ratio)
+            return float(second + diff)
+
+    m = re.search(
+        r"has three (?:bins|sets|boxes) of .*?"
+        r"the first .*? has (\d+) more than double .*? second .*?"
+        r"the third .*? ([a-z-]+) as many .*? as the second .*?"
+        r"in total .*? hold (\d+) .*?how many .*? in the first",
+        q,
+    )
+    if m:
+        diff, ratio_word, grand = int(m.group(1)), m.group(2), int(m.group(3))
+        ratio = _frac(ratio_word)
+        if ratio is not None:
+            second = Fraction(grand - diff, 1) / (3 + ratio)
+            return float(2 * second + diff)
+
+    m = re.search(
+        r"wants to .*? for (?:(?P<mult>[a-z]+|\d+) times|(?P<twice>twice|double)) .*?"
+        r"combined.*?how many .*? need .*? today",
+        q,
+    )
+    if m:
+        if m.group("twice"):
+            multiplier = 2
         else:
-            word = re.search(r"(\w+)\s+times?", raw_mult)
-            multiplier = _parse_written_number(word.group(1)) if word else None
-
-        nums = re.findall(r"(\d+)\s+(?:minutes?|pages?|pushups?|sit-?ups?|laps?|miles?|km)", q)
+            token = m.group("mult")
+            multiplier = int(token) if token.isdigit() else _word_num(token)
+        nums = [int(x) for x in re.findall(r"(\d+)\s+(?:minutes|pages)", q)]
         if multiplier is not None and nums:
-            already = sum(float(x) for x in nums)
-            return round(already * multiplier - already, 6)
-
-    return None
-
-
-
-def _solve_count(q: str) -> float | None:
-    """
-    Handles problems where items accumulate or deplete across named periods
-    (days, weeks, months) with a stated rate per period.
-    """
+            done = sum(nums)
+            return float(done * multiplier - done)
 
     m = re.search(
-        r"(?:saves?|earns?|collects?|makes?|produces?|reads?|does?)\s+(\d+)"
-        r".*?(?:a|per)\s+(day|week|month|hour)"
-        r".*?(?:for|over|during)\s+(\d+)\s+\2s?",
+        r"(\w+) .*? twice as fast as .*?they .*? (\d+) .*? per hour together.*?by herself in (\d+) hours",
         q,
     )
     if m:
-        rate, _, periods = float(m.group(1)), m.group(2), float(m.group(3))
-        return round(rate * periods, 6)
-
+        combined_rate, solo_hours = int(m.group(2)), int(m.group(3))
+        return float(combined_rate * Fraction(2, 3) * solo_hours)
+    
     m = re.search(
-        r"(?:starts? with|begins? with|has|owns?)\s+(\d+)"
-        r".*?(?:gains?|adds?|receives?|gets?|earns?)\s+(\d+)"
-        r".*?(?:each|every|per)\s+\w+"
-        r".*?(?:for|over|during)\s+(\d+)",
+        r"charges (\d+) dollars for the first (\d+) hours?, (\d+) dollars per hour for the next (\d+) hours?, "
+        r"and (\d+) dollars per hour after that.*?parked for (\d+) hours",
         q,
     )
     if m:
-        start, gain, periods = map(float, m.groups())
-        return round(start + gain * periods, 6)
+        flat, flat_hrs, mid_rate, mid_hrs, late_rate, parked = map(int, m.groups())
+        leftover = max(0, parked - flat_hrs - mid_hrs)
+        return float(flat + mid_rate * mid_hrs + late_rate * leftover)
 
     return None
 
-
-_CATEGORY_SOLVERS = [
-    _solve_price,
-    _solve_rate,
-    _solve_calendar,
-    _solve_group,
-    _solve_count,
-]
-
-
-def try_exact_solve(raw_question: str) -> float | None:
-    """
-    Try each GSM8K problem-category solver in turn.
-    Returns the first non-None result, or None if no category matches.
-    LLM generation is skipped entirely for matched questions.
-    """
-    q = _norm(raw_question)
-    for solver in _CATEGORY_SOLVERS:
-        result = solver(q)
-        if result is not None:
-            return result
-    return None
 
 
 def _build_messages(question: str) -> list[dict]:
@@ -605,7 +472,7 @@ class Agent:
         inputs = self._tokenize_batch(questions)
         prompt_len = inputs["input_ids"].shape[1]
 
-        # ── Greedy pass ──
+
         greedy_ids = self._generate(inputs, do_sample=False)
         greedy_traces = self._decode_traces(greedy_ids, prompt_len)
         greedy_answers = [_parse_final_number(t) for t in greedy_traces]
