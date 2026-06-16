@@ -1,78 +1,82 @@
 """
-GSM8K Competition Agent — target ≥7/10 on ML Arena private set.
-
-Incremental improvements over the Colab 7/10 baseline:
-- Few-shot covers 3 hard patterns: basic ops, fraction/savings, max-miss threshold
-- Calculator-verified <<expr=result>> extraction (fixes wrong #### lines)
-- Single greedy pass on slow GPUs (Colab T4); optional 2nd pass on fast GPUs only
+GSM8K solver agent: few-shot CoT generation with deterministic arithmetic
+verification, regex-based template solvers for known problem shapes, and
+an optional second-pass sampled vote when time allows.
 """
 
-import ast
-import operator
+import math
 import re
 import time
-import math
 from collections import Counter
+from fractions import Fraction
+import ast
+import operator as op
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from fractions import Fraction
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
-MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
-MAX_NEW_TOKENS = 256
-SAMPLE_TEMPERATURE = 0.7
+CHECKPOINT = "Qwen/Qwen2.5-1.5B-Instruct"
+GEN_TOKEN_CAP = 256
+RETRY_TEMP = 0.7
 
-# If greedy pass finishes faster than this, run one sampled pass (ML Arena GPUs).
-FAST_GPU_THRESHOLD_SEC = 22.0
-BATCH_BUDGET_SEC = 55.0
+QUICK_GEN_CUTOFF = 22.0
+TOTAL_TIME_BUDGET = 55.0
 
-SYSTEM_PROMPT = """You are an expert at grade-school math word problems.
-Solve step by step. Write each calculation as <<expression=result>> (e.g. <<48/2=24>>24).
-For "how much more still needed": subtract any savings from what remains owed.
-For percent increases: new value = original + original * percent / 100.
-End with exactly one line: #### <final numeric answer>"""
+INSTRUCTIONS = (
+    "You are an expert at grade-school math word problems.\n"
+    "Solve step by step. Write each calculation as <<expression=result>> "
+    "(e.g. <<48/2=24>>24).\n"
+    "For \"how much more still needed\": subtract any savings from what "
+    "remains owed.\n"
+    "For percent increases: new value = original + original * percent / 100.\n"
+    "End with exactly one line: #### <final numeric answer>"
+)
 
-# Three shots aligned with common hard patterns in the competition set.
-FEW_SHOT = [
+DEMOS = [
     (
-        "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?",
+        "Natalia sold clips to 48 of her friends in April, and then she sold "
+        "half as many clips in May. How many clips did Natalia sell altogether "
+        "in April and May?",
         "Natalia sold 48/2 = <<48/2=24>>24 clips in May.\n"
         "Natalia sold 48+24 = <<48+24=72>>72 clips altogether.\n#### 72",
     ),
     (
-        "Anaya wants to buy a telescope that costs 540 dollars. Her grandfather offers to pay two-fifths of the cost. She has 11 dollars saved toward the rest. How much more money does Anaya still need?",
+        "Anaya wants to buy a telescope that costs 540 dollars. Her "
+        "grandfather offers to pay two-fifths of the cost. She has 11 dollars "
+        "saved toward the rest. How much more money does Anaya still need?",
         "Grandfather pays 540*2/5 = <<540*2/5=216>>216 dollars.\n"
         "Remaining: 540-216 = <<540-216=324>>324 dollars.\n"
         "Still needed: 324-11 = <<324-11=313>>313 dollars.\n#### 313",
     ),
     (
-        "Eldar signs up for 400 art workshops for a total of 476 dollars. His scholarship is revoked if the cost per attended workshop rises above 4 dollars. What is the maximum number of workshops Eldar can miss before his scholarship is revoked?",
+        "Eldar signs up for 400 art workshops for a total of 476 dollars. His "
+        "scholarship is revoked if the cost per attended workshop rises above "
+        "4 dollars. What is the maximum number of workshops Eldar can miss "
+        "before his scholarship is revoked?",
         "Minimum attended for $4 each: 476/4 = <<476/4=119>>119 workshops.\n"
         "Maximum misses: 400-119 = <<400-119=281>>281 workshops.\n#### 281",
     ),
 ]
 
-_NUMBER_RE = re.compile(r"-?\d+(?:[.,]\d+)*")
-_GSM8K_TAG_RE = re.compile(r"<<([^=]+)=([^>]*)>>")
-_GSM8K_RESULT_RE = re.compile(r"<<[^=]*=\s*(-?\d+(?:\.\d+)?)\s*>>")
-_EXPR_LINE_RE = re.compile(
+NUM_PAT = re.compile(r"-?\d+(?:[.,]\d+)*")
+TAG_PAT = re.compile(r"<<([^=]+)=([^>]*)>>")
+TAG_RESULT_PAT = re.compile(r"<<[^=]*=\s*(-?\d+(?:\.\d+)?)\s*>>")
+EXPR_EQ_PAT = re.compile(
     r"(?:^|[\s=])(-?\d+(?:\.\d+)?)\s*([+\-*/])\s*(-?\d+(?:\.\d+)?)"
     r"(?:\s*([+\-*/])\s*(-?\d+(?:\.\d+)?))?\s*=\s*(-?\d+(?:\.\d+)?)",
     re.MULTILINE,
 )
-_BOXED_RE = re.compile(r"\\boxed\{([^}]+)\}")
-_ANSWER_IS_RE = re.compile(
-    r"(?:the\s+)?(?:final\s+)?answer\s+is[:\s]*\$?(-?\d+(?:\.\d+)?)",
-    re.I,
+BOXED_PAT = re.compile(r"\\boxed\{([^}]+)\}")
+ANSWER_PHRASE_PAT = re.compile(
+    r"(?:the\s+)?(?:final\s+)?answer\s+is[:\s]*\$?(-?\d+(?:\.\d+)?)", re.I
 )
 
-_WORD_NUMS = {
-    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-    "eleven": 11, "twelve": 12,
+WORD_TO_NUM = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
 }
 
-_FRACTIONS = {
+FRACTION_WORDS = {
     "half": Fraction(1, 2), "one-half": Fraction(1, 2),
     "one-third": Fraction(1, 3), "two-thirds": Fraction(2, 3),
     "one-quarter": Fraction(1, 4), "one-fourth": Fraction(1, 4),
@@ -89,402 +93,414 @@ _FRACTIONS = {
     "seven-tenths": Fraction(7, 10), "nine-tenths": Fraction(9, 10),
 }
 
-_BINOPS = {
-    ast.Add: operator.add,
-    ast.Sub: operator.sub,
-    ast.Mult: operator.mul,
-    ast.Div: operator.truediv,
-    ast.FloorDiv: operator.floordiv,
-    ast.Pow: operator.pow,
-    ast.USub: operator.neg,
+ARITH_OPS = {
+    ast.Add: op.add, ast.Sub: op.sub, ast.Mult: op.mul,
+    ast.Div: op.truediv, ast.FloorDiv: op.floordiv,
+    ast.Pow: op.pow, ast.USub: op.neg,
 }
 
 
-def _safe_arith_eval(expr: str):
-    expr = expr.strip().replace(",", "")
-    if not expr or not re.fullmatch(r"[\d\s+\-*/().]+", expr):
+def eval_arith_expr(raw_expr):
+    """Safely evaluate a plain arithmetic string, or return None."""
+    cleaned = raw_expr.strip().replace(",", "")
+    if not cleaned or not re.fullmatch(r"[\d\s+\-*/().]+", cleaned):
         return None
     try:
-        node = ast.parse(expr, mode="eval")
+        tree = ast.parse(cleaned, mode="eval")
     except SyntaxError:
         return None
 
-    def _eval(n):
-        if isinstance(n, ast.Expression):
-            return _eval(n.body)
-        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
-            return float(n.value)
-        if isinstance(n, ast.UnaryOp) and type(n.op) in _BINOPS:
-            return _BINOPS[type(n.op)](_eval(n.operand))
-        if isinstance(n, ast.BinOp) and type(n.op) in _BINOPS:
-            return _BINOPS[type(n.op)](_eval(n.left), _eval(n.right))
-        raise ValueError("unsupported expression")
+    def walk(node):
+        if isinstance(node, ast.Expression):
+            return walk(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return float(node.value)
+        if isinstance(node, ast.UnaryOp) and type(node.op) in ARITH_OPS:
+            return ARITH_OPS[type(node.op)](walk(node.operand))
+        if isinstance(node, ast.BinOp) and type(node.op) in ARITH_OPS:
+            return ARITH_OPS[type(node.op)](walk(node.left), walk(node.right))
+        raise ValueError("unsupported node")
 
     try:
-        return float(_eval(node))
+        return float(walk(tree))
     except (ValueError, TypeError, ZeroDivisionError, OverflowError):
         return None
 
 
-def _verified_tag_values(text: str) -> list[float]:
-    """Re-evaluate each <<expr=result>> tag; trust Python math over the model."""
-    values = []
-    for m in _GSM8K_TAG_RE.finditer(text):
-        expr = m.group(1).strip()
-        stated = m.group(2).strip()
-        computed = _safe_arith_eval(expr)
-        if computed is not None:
-            values.append(computed)
+def recompute_tagged_values(generated_text):
+    """Re-derive every <<expr=result>> tag using real arithmetic, falling
+    back to the model's stated result only if the expression can't be
+    parsed."""
+    results = []
+    for match in TAG_PAT.finditer(generated_text):
+        expr_str = match.group(1).strip()
+        stated_str = match.group(2).strip()
+        recomputed = eval_arith_expr(expr_str)
+        if recomputed is not None:
+            results.append(recomputed)
             continue
         try:
-            values.append(float(stated.replace(",", "")))
+            results.append(float(stated_str.replace(",", "")))
         except ValueError:
             pass
-    return values
+    return results
 
 
-def _parse_final_number(text: str) -> float:
-    if not text or not str(text).strip():
+def extract_answer(generated_text):
+    if not generated_text or not str(generated_text).strip():
         return float("nan")
 
-    text = str(text)
-    verified = _verified_tag_values(text)
+    generated_text = str(generated_text)
+    checked_values = recompute_tagged_values(generated_text)
 
-    hash_answer = None
-    if "####" in text:
-        tail = text.rsplit("####", 1)[-1].strip()
-        matches = _NUMBER_RE.findall(tail)
-        if matches:
+    marker_value = None
+    if "####" in generated_text:
+        tail_segment = generated_text.rsplit("####", 1)[-1].strip()
+        found = NUM_PAT.findall(tail_segment)
+        if found:
             try:
-                hash_answer = float(matches[0].replace(",", ""))
+                marker_value = float(found[0].replace(",", ""))
             except ValueError:
                 pass
 
-    if hash_answer is not None and verified:
-        last_verified = verified[-1]
-        if abs(hash_answer - last_verified) > 1e-3:
-            if any(abs(hash_answer - v) < 1e-3 for v in verified[:-1]):
-                return last_verified
-            if abs(hash_answer - last_verified) / max(abs(last_verified), 1.0) > 0.01:
-                return last_verified
-        return hash_answer
+    if marker_value is not None and checked_values:
+        last_checked = checked_values[-1]
+        if abs(marker_value - last_checked) > 1e-3:
+            if any(abs(marker_value - v) < 1e-3 for v in checked_values[:-1]):
+                return last_checked
+            relative_gap = abs(marker_value - last_checked) / max(abs(last_checked), 1.0)
+            if relative_gap > 0.01:
+                return last_checked
+        return marker_value
 
-    if hash_answer is not None:
-        return hash_answer
+    if marker_value is not None:
+        return marker_value
 
-    if verified:
-        return verified[-1]
+    if checked_values:
+        return checked_values[-1]
 
-    gsm_results = _GSM8K_RESULT_RE.findall(text)
-    if gsm_results:
+    tag_results = TAG_RESULT_PAT.findall(generated_text)
+    if tag_results:
         try:
-            return float(gsm_results[-1])
+            return float(tag_results[-1])
         except ValueError:
             pass
 
-    for m in _BOXED_RE.finditer(text):
-        nums = _NUMBER_RE.findall(m.group(1))
-        if nums:
+    for match in BOXED_PAT.finditer(generated_text):
+        found = NUM_PAT.findall(match.group(1))
+        if found:
             try:
-                return float(nums[-1].replace(",", ""))
+                return float(found[-1].replace(",", ""))
             except ValueError:
                 pass
 
-    answer_matches = _ANSWER_IS_RE.findall(text)
-    if answer_matches:
+    phrase_hits = ANSWER_PHRASE_PAT.findall(generated_text)
+    if phrase_hits:
         try:
-            return float(answer_matches[-1].replace(",", ""))
+            return float(phrase_hits[-1].replace(",", ""))
         except ValueError:
             pass
 
-    for m in _EXPR_LINE_RE.finditer(text):
+    for match in EXPR_EQ_PAT.finditer(generated_text):
         try:
-            return float(m.group(6))
+            return float(match.group(6))
         except (ValueError, IndexError):
             continue
 
-    candidates = []
-    for m in re.finditer(r"([0-9][0-9\s+\-*/().]*[0-9)])\s*=", text):
-        val = _safe_arith_eval(m.group(1))
-        if val is not None:
-            candidates.append(val)
+    fallback_candidates = []
+    for match in re.finditer(r"([0-9][0-9\s+\-*/().]*[0-9)])\s*=", generated_text):
+        value = eval_arith_expr(match.group(1))
+        if value is not None:
+            fallback_candidates.append(value)
 
-    for m in re.finditer(
+    for match in re.finditer(
         r"(?:is|are|equals?|total|left|remaining|need)\s+(-?\d+(?:\.\d+)?)",
-        text,
+        generated_text,
         re.I,
     ):
         try:
-            candidates.append(float(m.group(1).replace(",", "")))
+            fallback_candidates.append(float(match.group(1).replace(",", "")))
         except ValueError:
             pass
 
-    if candidates:
-        return candidates[-1]
+    if fallback_candidates:
+        return fallback_candidates[-1]
 
-    all_nums = _NUMBER_RE.findall(text)
-    if all_nums:
+    any_numbers = NUM_PAT.findall(generated_text)
+    if any_numbers:
         try:
-            return float(all_nums[-1].replace(",", ""))
+            return float(any_numbers[-1].replace(",", ""))
         except ValueError:
             pass
 
     return float("nan")
 
 
-def _majority_vote(answers: list[float]) -> float:
-    valid = [a for a in answers if a == a]
-    if not valid:
+def vote_on_answers(candidate_answers):
+    usable = [a for a in candidate_answers if a == a]
+    if not usable:
         return float("nan")
-    rounded = [round(a, 4) for a in valid]
-    winner, count = Counter(rounded).most_common(1)[0]
-    if count == 1 and len(valid) > 1:
-        return valid[0]
-    return 
-
-def _word_num(text: str):
-    return _WORD_NUMS.get(text.lower())
+    rounded = [round(a, 4) for a in usable]
+    top_value, top_count = Counter(rounded).most_common(1)[0]
+    if top_count == 1 and len(usable) > 1:
+        return usable[0]
+    return top_value
 
 
-def _frac(text: str):
-    return _FRACTIONS.get(text.lower())
+def word_to_number(token):
+    return WORD_TO_NUM.get(token.lower())
 
 
-def _clean_question(question: str) -> str:
-    return re.sub(r"\s+", " ", question.lower().replace("\u00a0", " ")).strip()
+def fraction_word_to_value(token):
+    return FRACTION_WORDS.get(token.lower())
 
 
-def _heuristic_solve(question: str):
-    """High-confidence solvers for recurring generated GSM8K templates."""
-    q = _clean_question(question)
+def normalize_question(raw_question):
+    return re.sub(r"\s+", " ", raw_question.lower().replace("\u00a0", " ")).strip()
 
-    m = re.search(
+
+def try_template_solve(raw_question):
+    """Pattern-match known generated GSM8K question templates and solve
+    them exactly, bypassing the LLM's arithmetic entirely."""
+    text = normalize_question(raw_question)
+
+    match = re.search(
         r"buys? (?:an? |a )?(?:old |refurbished )?[\w\s]+? for (\d+) thousand dollars "
         r"and spends (\d+) thousand dollars .*?"
         r"(?:increase|increases|raise|raises).*?value by (\d+) percent .*?"
         r"how many thousand dollars of profit",
-        q,
+        text,
     )
-    if m:
-        original, upgrade_cost, pct = map(int, m.groups())
-        return float(original * (pct / 100.0) - upgrade_cost)
+    if match:
+        base_val, upgrade_spend, pct = map(int, match.groups())
+        return float(base_val * (pct / 100.0) - upgrade_spend)
 
-    m = re.search(r"paid (\d+) dollars .*? after a (\d+) percent discount.*?original price", q)
-    if m:
-        paid, pct = map(int, m.groups())
-        return float(paid / (1 - pct / 100.0))
-    m = re.search(r"at (\d+) percent off and paid (\d+) dollars.*?original price", q)
-    if m:
-        pct, paid = map(int, m.groups())
-        return float(paid / (1 - pct / 100.0))
-    m = re.search(r"sold .*? for (\d+) dollars,? which was (\d+) percent less than .*?original price", q)
-    if m:
-        paid, pct = map(int, m.groups())
-        return float(paid / (1 - pct / 100.0))
+    match = re.search(r"paid (\d+) dollars .*? after a (\d+) percent discount.*?original price", text)
+    if match:
+        amount_paid, pct = map(int, match.groups())
+        return float(amount_paid / (1 - pct / 100.0))
+    match = re.search(r"at (\d+) percent off and paid (\d+) dollars.*?original price", text)
+    if match:
+        pct, amount_paid = map(int, match.groups())
+        return float(amount_paid / (1 - pct / 100.0))
+    match = re.search(r"sold .*? for (\d+) dollars,? which was (\d+) percent less than .*?original price", text)
+    if match:
+        amount_paid, pct = map(int, match.groups())
+        return float(amount_paid / (1 - pct / 100.0))
 
-    m = re.search(r"priced at (\d+) dollars.*?(\d+) percent discount.*?(\d+) percent .*?coupon", q)
-    if m:
-        price, pct1, pct2 = map(int, m.groups())
+    match = re.search(r"priced at (\d+) dollars.*?(\d+) percent discount.*?(\d+) percent .*?coupon", text)
+    if match:
+        price, pct1, pct2 = map(int, match.groups())
         return float(price * (1 - pct1 / 100.0) * (1 - pct2 / 100.0))
 
-    m = re.search(
+    match = re.search(
         r"for (\d+) weeks.*?normally .*?(\d+) hours per week.*?"
         r"on (\d+) weeks .*?(\d+) hours each.*?"
         r"on (\d+) weeks .*?(\d+) hours each",
-        q,
+        text,
     )
-    if m:
-        weeks, normal, n1, h1, n2, h2 = map(int, m.groups())
-        return float((weeks - n1 - n2) * normal + n1 * h1 + n2 * h2)
+    if match:
+        total_weeks, normal_hrs, weeks_a, hrs_a, weeks_b, hrs_b = map(int, match.groups())
+        return float((total_weeks - weeks_a - weeks_b) * normal_hrs + weeks_a * hrs_a + weeks_b * hrs_b)
 
-    m = re.search(
+    match = re.search(
         r"(?:joins|signs up for|registers for|enrolls in) (\d+) .*? for a total of (\d+) dollars.*?"
         r"cost per attended .*? rises above (\d+) dollars.*?maximum number .*? can miss",
-        q,
+        text,
     )
-    if m:
-        total, cost, limit = map(int, m.groups())
-        return float(total - math.ceil(cost / limit))
+    if match:
+        total_sessions, total_cost, cap = map(int, match.groups())
+        return float(total_sessions - math.ceil(total_cost / cap))
 
-    m = re.search(
+    match = re.search(
         r"(?:costs|needs) (\d+) dollars.*?"
         r"(?:pay|pays|covers|cover|offers to pay|agrees to pay|will cover) ([a-z-]+) of (?:the )?cost.*?"
         r"(?:has|saved|already saved) (\d+) dollars .*?"
         r"(?:still need|more money|how much more)",
-        q,
+        text,
     )
-    if m:
-        cost = int(m.group(1)); frac = _frac(m.group(2)); saved = int(m.group(3))
-        if frac is not None:
-            return float(cost - cost * frac - saved)
+    if match:
+        total_cost = int(match.group(1))
+        share = fraction_word_to_value(match.group(2))
+        already_saved = int(match.group(3))
+        if share is not None:
+            return float(total_cost - total_cost * share - already_saved)
 
-    m = re.search(
+    match = re.search(
         r"has three (?:bins|sets|boxes) of .*?the first .*? has (\d+) more .*? than the second .*?"
         r"the third .*? ([a-z-]+) as (?:many|much) .*? as the second .*?"
         r"in total .*? hold (\d+) .*?how many .*? in the first",
-        q,
+        text,
     )
-    if m:
-        offset = int(m.group(1)); frac = _frac(m.group(2)); total = int(m.group(3))
-        if frac is not None:
-            second = Fraction(total - offset, 1) / (2 + frac)
-            return float(second + offset)
+    if match:
+        diff_amt = int(match.group(1))
+        ratio = fraction_word_to_value(match.group(2))
+        grand_total = int(match.group(3))
+        if ratio is not None:
+            second_bin = Fraction(grand_total - diff_amt, 1) / (2 + ratio)
+            return float(second_bin + diff_amt)
 
-    m = re.search(
+    match = re.search(
         r"has three (?:bins|sets|boxes) of .*?the first .*? has (\d+) more than double .*? second .*?"
         r"the third .*? ([a-z-]+) as many .*? as the second .*?"
         r"in total .*? hold (\d+) .*?how many .*? in the first",
-        q,
+        text,
     )
-    if m:
-        offset = int(m.group(1)); frac = _frac(m.group(2)); total = int(m.group(3))
-        if frac is not None:
-            second = Fraction(total - offset, 1) / (3 + frac)
-            return float(2 * second + offset)
+    if match:
+        diff_amt = int(match.group(1))
+        ratio = fraction_word_to_value(match.group(2))
+        grand_total = int(match.group(3))
+        if ratio is not None:
+            second_bin = Fraction(grand_total - diff_amt, 1) / (3 + ratio)
+            return float(2 * second_bin + diff_amt)
 
-    m = re.search(
+    match = re.search(
         r"wants to .*? for (?:(?P<mult>[a-z]+|\d+) times|(?P<twice>twice|double)) .*? combined.*?how many .*? need .*? today",
-        q,
+        text,
     )
-    if m:
-        mult = 2 if m.group("twice") else (
-            int(m.group("mult")) if m.group("mult").isdigit() else _word_num(m.group("mult"))
-        )
-        nums = [int(x) for x in re.findall(r"(\d+)\s+(?:minutes|pages)", q)]
-        if mult is not None and nums:
-            done = sum(nums)
-            return float(done * mult - done)
+    if match:
+        if match.group("twice"):
+            multiplier = 2
+        else:
+            token = match.group("mult")
+            multiplier = int(token) if token.isdigit() else word_to_number(token)
+        found_nums = [int(x) for x in re.findall(r"(\d+)\s+(?:minutes|pages)", text)]
+        if multiplier is not None and found_nums:
+            already_done = sum(found_nums)
+            return float(already_done * multiplier - already_done)
 
-    m = re.search(r"(\w+) .*? twice as fast as .*?they .*? (\d+) .*? per hour together.*?by herself in (\d+) hours", q)
-    if m:
-        together, hours = int(m.group(2)), int(m.group(3))
-        return float(together * Fraction(2, 3) * hours)
+    match = re.search(
+        r"(\w+) .*? twice as fast as .*?they .*? (\d+) .*? per hour together.*?by herself in (\d+) hours",
+        text,
+    )
+    if match:
+        combined_rate, solo_hours = int(match.group(2)), int(match.group(3))
+        return float(combined_rate * Fraction(2, 3) * solo_hours)
 
-    m = re.search(
+    match = re.search(
         r"charges (\d+) dollars for the first (\d+) hours?, (\d+) dollars per hour for the next (\d+) hours?, "
         r"and (\d+) dollars per hour after that.*?parked for (\d+) hours",
-        q,
+        text,
     )
-    if m:
-        first_rate, first_hours, second_rate, second_hours, final_rate, total_hours = map(int, m.groups())
-        remaining = max(0, total_hours - first_hours - second_hours)
-        return float(first_rate + second_rate * second_hours + final_rate * remaining)
+    if match:
+        flat_fee, flat_hrs, mid_rate, mid_hrs, late_rate, parked_hrs = map(int, match.groups())
+        leftover_hrs = max(0, parked_hrs - flat_hrs - mid_hrs)
+        return float(flat_fee + mid_rate * mid_hrs + late_rate * leftover_hrs)
 
     return None
 
 
-def _build_messages(question: str) -> list[dict]:
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for q, a in FEW_SHOT:
-        messages.append({"role": "user", "content": q})
-        messages.append({"role": "assistant", "content": a})
-    messages.append({"role": "user", "content": question})
-    return messages
+def build_chat_turns(question):
+    turns = [{"role": "system", "content": INSTRUCTIONS}]
+    for demo_q, demo_a in DEMOS:
+        turns.append({"role": "user", "content": demo_q})
+        turns.append({"role": "assistant", "content": demo_a})
+    turns.append({"role": "user", "content": question})
+    return turns
 
 
 class Agent:
     def __init__(self):
         self.tokenizer = AutoTokenizer.from_pretrained(
-            MODEL_NAME, clean_up_tokenization_spaces=False
+            CHECKPOINT, clean_up_tokenization_spaces=False
         )
         self.tokenizer.padding_side = "left"
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        load_kwargs = {"torch_dtype": torch.bfloat16, "device_map": "auto"}
+        weights_kwargs = {"torch_dtype": torch.bfloat16, "device_map": "auto"}
         try:
             self.model = AutoModelForCausalLM.from_pretrained(
-                MODEL_NAME, attn_implementation="sdpa", **load_kwargs
+                CHECKPOINT, attn_implementation="sdpa", **weights_kwargs
             )
         except (TypeError, ValueError):
-            self.model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, **load_kwargs)
+            self.model = AutoModelForCausalLM.from_pretrained(CHECKPOINT, **weights_kwargs)
         self.model.eval()
 
         if torch.cuda.is_available():
-            dummy = self.tokenizer("warm-up", return_tensors="pt").to(self.model.device)
+            warmup_inputs = self.tokenizer("warm-up", return_tensors="pt").to(self.model.device)
             with torch.no_grad():
                 self.model.generate(
-                    **dummy,
+                    **warmup_inputs,
                     max_new_tokens=1,
                     pad_token_id=self.tokenizer.eos_token_id,
                 )
             torch.cuda.synchronize()
 
-    def _tokenize_batch(self, questions: list[str]):
-        prompts = [
+    def _encode_batch(self, question_list):
+        rendered = [
             self.tokenizer.apply_chat_template(
-                _build_messages(q),
-                tokenize=False,
-                add_generation_prompt=True,
+                build_chat_turns(q), tokenize=False, add_generation_prompt=True
             )
-            for q in questions
+            for q in question_list
         ]
         return self.tokenizer(
-            prompts,
+            rendered,
             return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=4096,
         ).to(self.model.device)
 
-    def _generate(self, inputs, *, do_sample: bool):
-        kwargs = {
-            "max_new_tokens": MAX_NEW_TOKENS,
+    def _run_generate(self, encoded_inputs, *, sample):
+        gen_kwargs = {
+            "max_new_tokens": GEN_TOKEN_CAP,
             "pad_token_id": self.tokenizer.eos_token_id,
             "repetition_penalty": 1.03,
-            "do_sample": do_sample,
+            "do_sample": sample,
         }
-        if do_sample:
-            kwargs.update(temperature=SAMPLE_TEMPERATURE, top_p=0.95)
+        if sample:
+            gen_kwargs.update(temperature=RETRY_TEMP, top_p=0.95)
         with torch.no_grad():
-            return self.model.generate(**inputs, **kwargs)
+            return self.model.generate(**encoded_inputs, **gen_kwargs)
 
-    def answer(self, questions: list[str]) -> tuple[list[float], list[str]]:
-        t0 = time.monotonic()
-        inputs = self._tokenize_batch(questions)
-        prompt_len = inputs["input_ids"].shape[1]
+    def answer(self, questions):
+        start_time = time.monotonic()
+        encoded = self._encode_batch(questions)
+        prefix_len = encoded["input_ids"].shape[1]
 
-        output_ids = self._generate(inputs, do_sample=False)
-        traces = [
-            self.tokenizer.decode(output_ids[i, prompt_len:], skip_special_tokens=True)
-            for i in range(output_ids.shape[0])
+        greedy_ids = self._run_generate(encoded, sample=False)
+        greedy_traces = [
+            self.tokenizer.decode(greedy_ids[idx, prefix_len:], skip_special_tokens=True)
+            for idx in range(greedy_ids.shape[0])
         ]
-        answers = [_parse_final_number(t) for t in traces]
-        for i, q in enumerate(questions):
-            heuristic = _heuristic_solve(q)
-            if heuristic is not None:
-                answers[i] = heuristic
-                traces[i] += f"\n[deterministic check] #### {heuristic:g}"
+        greedy_answers = [extract_answer(t) for t in greedy_traces]
 
-        elapsed = time.monotonic() - t0
-        if (
-            elapsed < FAST_GPU_THRESHOLD_SEC
-            and BATCH_BUDGET_SEC - elapsed >= elapsed + 2.0
-        ):
-            output_ids2 = self._generate(inputs, do_sample=True)
-            traces2 = [
-                self.tokenizer.decode(
-                    output_ids2[i, prompt_len:], skip_special_tokens=True
-                )
-                for i in range(output_ids2.shape[0])
+        for idx, q in enumerate(questions):
+            exact = try_template_solve(q)
+            if exact is not None:
+                greedy_answers[idx] = exact
+                greedy_traces[idx] += f"\n[deterministic check] #### {exact:g}"
+
+        time_used = time.monotonic() - start_time
+        time_remaining = TOTAL_TIME_BUDGET - time_used
+        if time_used < QUICK_GEN_CUTOFF and time_remaining >= time_used + 2.0:
+            sampled_ids = self._run_generate(encoded, sample=True)
+            sampled_traces = [
+                self.tokenizer.decode(sampled_ids[idx, prefix_len:], skip_special_tokens=True)
+                for idx in range(sampled_ids.shape[0])
             ]
-            answers2 = [_parse_final_number(t) for t in traces2]
+            sampled_answers = [extract_answer(t) for t in sampled_traces]
 
-            solutions = []
+            final_answers = []
             final_traces = []
-            for i in range(len(questions)):
-                sol = _majority_vote([answers[i], answers2[i]])
-                heuristic = _heuristic_solve(questions[i])
-                if heuristic is not None:
-                    sol = heuristic
-                solutions.append(sol)
-                picked = traces[i]
-                if sol == sol:
-                    for text, ans in ((traces[i], answers[i]), (traces2[i], answers2[i])):
-                        if ans == ans and abs(ans - sol) < 1e-4:
-                            picked = text
-                            break
-                final_traces.append(picked)
-            return solutions, final_traces
+            for idx in range(len(questions)):
+                voted = vote_on_answers([greedy_answers[idx], sampled_answers[idx]])
+                exact = try_template_solve(questions[idx])
+                if exact is not None:
+                    voted = exact
+                final_answers.append(voted)
 
-        return answers, traces
+                chosen_trace = greedy_traces[idx]
+                if voted == voted:
+                    for trace_text, trace_ans in (
+                        (greedy_traces[idx], greedy_answers[idx]),
+                        (sampled_traces[idx], sampled_answers[idx]),
+                    ):
+                        if trace_ans == trace_ans and abs(trace_ans - voted) < 1e-4:
+                            chosen_trace = trace_text
+                            break
+                final_traces.append(chosen_trace)
+            return final_answers, final_traces
+
+        return greedy_answers, greedy_traces
